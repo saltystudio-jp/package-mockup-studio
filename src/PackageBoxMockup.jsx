@@ -3,6 +3,7 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
 import ScrubField from "./components/ScrubField.jsx";
+import Outliner from "./components/Outliner.jsx";
 import CardPanel from "./components/CardPanel.jsx";
 import PiecePanel from "./components/PiecePanel.jsx";
 import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
@@ -402,6 +403,11 @@ export default function PackageBoxMockup() {
   const [toneMappingMode, setToneMappingMode] = useState("flat");
   const [sidebarWidth, setSidebarWidth] = useState(320);
   const [bottomBarHeight, setBottomBarHeight] = useState(300);
+  // asset drawer (net images, symbol/shape libraries, export settings) starts
+  // collapsed — these are "register an asset" actions used occasionally, not
+  // continuously, so hiding them by default gives the 3D viewport the vertical space
+  // instead of always reserving 300px for a panel most sessions only open briefly.
+  const [bottomBarCollapsed, setBottomBarCollapsed] = useState(true);
 
   // the 3D render is a fixed-size "artboard" floating inside the viewport (pasteboard),
   // After Effects-preview-style: its own size, zoom, and pan position, independent of
@@ -2000,6 +2006,7 @@ export default function PackageBoxMockup() {
     const remaining = boxInstances.filter((b) => b.id !== id);
     setBoxInstances(remaining);
     if (selectedBoxId === id) setSelectedBoxId(remaining[0].id);
+    if (activeSelection.kind === "box" && activeSelection.id === id) selectObject("box", remaining[0].id);
   };
 
   // ---- symbol library management ----
@@ -2080,6 +2087,7 @@ export default function PackageBoxMockup() {
       if (selectedCardId === id) setSelectedCardId(remaining[0]?.id ?? null);
       return remaining;
     });
+    if (activeSelection.kind === "card" && activeSelection.id === id) selectObject("box", boxInstances[0].id);
   };
   const updateCardInstance = (id, patch) => {
     setCardInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
@@ -2145,6 +2153,25 @@ export default function PackageBoxMockup() {
       if (selectedPieceId === id) setSelectedPieceId(remaining[0]?.id ?? null);
       return remaining;
     });
+    if (activeSelection.kind === "piece" && activeSelection.id === id) selectObject("box", boxInstances[0].id);
+  };
+
+  // ---- unified dispatch used by the Outliner (single add/duplicate/remove UI
+  // covering all three kinds instead of each kind having its own copy) ----
+  const addInstance = (kind) => {
+    if (kind === "box") addBoxInstance();
+    else if (kind === "card") addCardInstance();
+    else if (kind === "piece") addPieceInstance();
+  };
+  const duplicateInstance = (kind, id) => {
+    if (kind === "box") duplicateBoxInstance();
+    else if (kind === "card") duplicateCardInstance(id);
+    else if (kind === "piece") duplicatePieceInstance(id);
+  };
+  const removeInstance = (kind, id) => {
+    if (kind === "box") removeBoxInstance(id);
+    else if (kind === "card") removeCardInstance(id);
+    else if (kind === "piece") removePieceInstance(id);
   };
   const updatePieceInstance = (id, patch) => {
     setPieceInstances((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
@@ -2244,6 +2271,19 @@ export default function PackageBoxMockup() {
           </h1>
         </div>
 
+        <Outliner
+          boxInstances={boxInstances}
+          cardInstances={cardInstances}
+          pieceInstances={pieceInstances}
+          activeSelection={activeSelection}
+          onSelect={selectObject}
+          onAdd={addInstance}
+          onDuplicate={duplicateInstance}
+          onRemove={removeInstance}
+        />
+
+        {activeSelection.kind === "box" && (
+        <>
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
             身(箱)のサイズ mm
@@ -2270,54 +2310,8 @@ export default function PackageBoxMockup() {
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
-            配置(箱の数)
+            配置(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})
           </div>
-          <div className="flex flex-wrap gap-1 mb-3">
-            {boxInstances.map((b, i) => (
-              <button
-                key={b.id}
-                onClick={() => selectObject("box", b.id)}
-                className="flex items-center gap-1 text-xs rounded pl-2 pr-1 py-1"
-                style={{
-                  background: b.id === selectedInstance.id ? "#e2432a" : "#3a372f",
-                  color: b.id === selectedInstance.id ? "#1c1a17" : "#efe6d4",
-                  fontWeight: b.id === selectedInstance.id ? 600 : 400,
-                }}
-              >
-                箱{i + 1}
-                {boxInstances.length > 1 && (
-                  <span
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      removeBoxInstance(b.id);
-                    }}
-                    className="rounded-full flex items-center justify-center"
-                    style={{ width: "14px", height: "14px", background: "rgba(0,0,0,0.25)", fontSize: "10px", lineHeight: 1 }}
-                  >
-                    ×
-                  </span>
-                )}
-              </button>
-            ))}
-            <button
-              onClick={addBoxInstance}
-              className="text-xs rounded px-2 py-1"
-              style={{ background: "#3a372f", color: "#5fd3d9" }}
-            >
-              ＋追加
-            </button>
-            <button
-              onClick={duplicateBoxInstance}
-              className="text-xs rounded px-2 py-1"
-              style={{ background: "#3a372f", color: "#5fd3d9" }}
-              title="選択中の箱をそのまま複製します"
-            >
-              複製
-            </button>
-          </div>
-          <p className="text-xs mb-2" style={{ color: "#7d7568" }}>
-            同じデザインの箱を並べて配置できます。下の位置・回転・傾き・蓋の開きは選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})に対する設定です。
-          </p>
           <div className="grid grid-cols-2 gap-2 mb-2">
             {instanceNumField("位置 X", "x", -2000, 2000, "mm")}
             {instanceNumField("位置 Z", "z", -2000, 2000, "mm")}
@@ -2413,6 +2407,24 @@ export default function PackageBoxMockup() {
           </label>
         </div>
 
+        <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
+          {instanceNumField("地面からの高さ", "floatHeight", -200, 500, "mm")}
+          <div className="mt-3 pt-3" style={{ borderTop: "1px solid #3a372f" }}>
+            <label className="flex items-center gap-2 mb-2 text-xs" style={{ color: "#a89f8f" }}>
+              <input
+                type="checkbox"
+                checked={displayValue("groundSnap") !== false}
+                onChange={(e) => setParamValue("groundSnap", e.target.checked)}
+              />
+              接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
+            </label>
+            <ScrubField label="レイヤー" value={displayValue("layer") ?? 0} onChange={(v) => setParamValue("layer", Math.round(v))} min={0} max={20} />
+          </div>
+        </div>
+        </>
+        )}
+
+        {activeSelection.kind === "card" && (
         <CardPanel
           cardW={cardW}
           setCardW={setCardW}
@@ -2425,24 +2437,19 @@ export default function PackageBoxMockup() {
           symbols={symbols}
           cardInstances={cardInstances}
           selectedCardId={selectedCardId}
-          onSelectCard={(id) => selectObject("card", id)}
-          onAdd={addCardInstance}
-          onDuplicate={duplicateCardInstance}
-          onRemove={removeCardInstance}
           onUpdate={updateCardInstance}
         />
+        )}
 
+        {activeSelection.kind === "piece" && (
         <PiecePanel
           shapeDefs={pieceShapeDefs}
           symbols={symbols}
           pieceInstances={pieceInstances}
           selectedPieceId={selectedPieceId}
-          onSelectPiece={(id) => selectObject("piece", id)}
-          onAdd={addPieceInstance}
-          onDuplicate={duplicatePieceInstance}
-          onRemove={removePieceInstance}
           onUpdate={updatePieceInstance}
         />
+        )}
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
@@ -2526,29 +2533,10 @@ export default function PackageBoxMockup() {
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
             地面
           </div>
-          <label className="flex items-center gap-2 mb-3 text-xs" style={{ color: "#a89f8f" }}>
+          <label className="flex items-center gap-2 text-xs" style={{ color: "#a89f8f" }}>
             <input type="checkbox" checked={groundVisible} onChange={(e) => setGroundVisible(e.target.checked)} />
             地面を表示
           </label>
-          {instanceNumField("地面からの高さ", "floatHeight", -200, 500, "mm")}
-          <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
-            選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})のみに適用されます(「連動」で箱1に合わせることもできます)。
-          </p>
-
-          <div className="mt-3 pt-3" style={{ borderTop: "1px solid #3a372f" }}>
-            <label className="flex items-center gap-2 mb-2 text-xs" style={{ color: "#a89f8f" }}>
-              <input
-                type="checkbox"
-                checked={displayValue("groundSnap") !== false}
-                onChange={(e) => setParamValue("groundSnap", e.target.checked)}
-              />
-              接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
-            </label>
-            <ScrubField label="レイヤー" value={displayValue("layer") ?? 0} onChange={(v) => setParamValue("layer", Math.round(v))} min={0} max={20} />
-            <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
-              数字が大きいレイヤーほど上。接地オフのオブジェクトは「地面からの高さ」の数値がそのままY座標になります(自動配置の対象外)。
-            </p>
-          </div>
         </div>
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
@@ -2757,15 +2745,27 @@ export default function PackageBoxMockup() {
           </div>
         </div>
 
-        {/* drag handle: bottom bar height */}
-        <div
-          onPointerDown={onBottomBarHandleDown}
-          onPointerMove={onBottomBarHandleMove}
-          onPointerUp={onBottomBarHandleUp}
-          onPointerLeave={onBottomBarHandleUp}
-          style={{ height: "5px", flexShrink: 0, cursor: "row-resize", background: "#302d27", touchAction: "none" }}
-        />
+        {/* drag handle: bottom bar height (only meaningful while the drawer is open) */}
+        {!bottomBarCollapsed && (
+          <div
+            onPointerDown={onBottomBarHandleDown}
+            onPointerMove={onBottomBarHandleMove}
+            onPointerUp={onBottomBarHandleUp}
+            onPointerLeave={onBottomBarHandleUp}
+            style={{ height: "5px", flexShrink: 0, cursor: "row-resize", background: "#302d27", touchAction: "none" }}
+          />
+        )}
 
+      <button
+        onClick={() => setBottomBarCollapsed((v) => !v)}
+        className="flex-shrink-0 flex items-center gap-2 text-xs px-3 py-2 w-full text-left"
+        style={{ background: "#1c1a17", borderTop: "1px solid #302d27", color: "#a89f8f" }}
+      >
+        <span style={{ color: "#5fd3d9" }}>{bottomBarCollapsed ? "▸" : "▾"}</span>
+        アセット(シンボル・形状ライブラリ、箱の展開図画像、書き出し設定)
+      </button>
+
+      {!bottomBarCollapsed && (
       <div
         className="flex-shrink-0 flex gap-3 overflow-x-auto p-3"
         style={{ height: bottomBarHeight, background: "#1c1a17", borderTop: "1px solid #302d27" }}
@@ -2865,6 +2865,7 @@ export default function PackageBoxMockup() {
 
         {exportSettingsCard}
       </div>
+      )}
       </div>
 
       {cropEditor && (
