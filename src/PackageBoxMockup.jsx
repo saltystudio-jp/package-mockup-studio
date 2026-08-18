@@ -2,6 +2,7 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
+import ScrubField from "./components/ScrubField.jsx";
 import CardPanel from "./components/CardPanel.jsx";
 import PiecePanel from "./components/PiecePanel.jsx";
 import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
@@ -475,6 +476,20 @@ export default function PackageBoxMockup() {
   const [selectedPieceId, setSelectedPieceId] = useState(null);
   const nextPieceIdRef = useRef(1);
 
+  // unifies the three independent per-kind selections above into one "what is the
+  // viewport ring / click-to-pick currently pointing at" concept — kept ADDITIVE
+  // (each panel still tracks its own selectedXId, e.g. so the box panel remembers
+  // which box you were last editing even while a card is the active viewport
+  // selection) rather than replacing them, to avoid a much larger refactor of the
+  // box's existing linked-field system.
+  const [activeSelection, setActiveSelection] = useState({ kind: "box", id: 1 });
+  const selectObject = (kind, id) => {
+    setActiveSelection({ kind, id });
+    if (kind === "box") setSelectedBoxId(id);
+    else if (kind === "card") setSelectedCardId(id);
+    else if (kind === "piece") setSelectedPieceId(id);
+  };
+
   const mountRef = useRef(null);
   const viewportRef = useRef(null);
   const artboardRef = useRef(null);
@@ -482,6 +497,8 @@ export default function PackageBoxMockup() {
   const lidGuideCanvasRef = useRef(null);
   const lidInnerGuideCanvasRef = useRef(null);
   const boxInstancesRef = useRef(boxInstances);
+  const cardInstancesRef = useRef(cardInstances);
+  const pieceInstancesRef = useRef(pieceInstances);
   const autoRotateRef = useRef(false);
   const sidebarDragRef = useRef(null);
   const bottomBarDragRef = useRef(null);
@@ -512,6 +529,12 @@ export default function PackageBoxMockup() {
   useEffect(() => {
     boxInstancesRef.current = boxInstances;
   }, [boxInstances]);
+  useEffect(() => {
+    cardInstancesRef.current = cardInstances;
+  }, [cardInstances]);
+  useEffect(() => {
+    pieceInstancesRef.current = pieceInstances;
+  }, [pieceInstances]);
   useEffect(() => {
     autoRotateRef.current = autoRotate;
   }, [autoRotate]);
@@ -738,15 +761,35 @@ export default function PackageBoxMockup() {
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
+    // picks across ALL object kinds (box/card/piece) — each kind's mesh already carries
+    // userData.kind + userData.instanceId (set where each mesh is created above), so
+    // this only needs one combined raycast instead of one per kind.
     const pickInstanceAt = (clientX, clientY) => {
       const rect = renderer.domElement.getBoundingClientRect();
       pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointerNdc, camera);
-      const hits = raycaster.intersectObjects(allBoxesGroup.children, true);
+      const targets = [...allBoxesGroup.children, ...allCardsGroup.children, ...allPiecesGroup.children];
+      const hits = raycaster.intersectObjects(targets, true);
       const hit = hits.find((h) => h.object.userData.instanceId != null);
-      return hit ? hit.object.userData.instanceId : null;
+      return hit ? { kind: hit.object.userData.kind, id: hit.object.userData.instanceId } : null;
     };
+
+    // ground-plane (world Y=0) intersection under the cursor — used to translate a
+    // dragged object's X/Z regardless of the object's own current height, since
+    // footprint position doesn't depend on Y (same reasoning as the stacking resolver).
+    const dragPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), 0);
+    const dragPoint = new THREE.Vector3();
+    const groundPointAt = (clientX, clientY) => {
+      const rect = renderer.domElement.getBoundingClientRect();
+      pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
+      pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
+      raycaster.setFromCamera(pointerNdc, camera);
+      return raycaster.ray.intersectPlane(dragPlane, dragPoint);
+    };
+
+    const instancesRefByKind = { box: boxInstancesRef, card: cardInstancesRef, piece: pieceInstancesRef };
+    const setInstancesByKind = { box: setBoxInstances, card: setCardInstances, piece: setPieceInstances };
 
     const onPointerDown = (e) => {
       if (spacePressedRef.current) return; // space+drag pans the artboard instead — see the viewport-level handler
@@ -756,8 +799,29 @@ export default function PackageBoxMockup() {
       if (e.button === 1) {
         t.panning = true;
         e.preventDefault();
-      } else {
-        t.dragging = true;
+      } else if (e.button === 0) {
+        const hit = pickInstanceAt(e.clientX, e.clientY);
+        if (hit) {
+          // select immediately on mousedown (standard editor behavior: mousedown
+          // selects, a subsequent drag moves the now-selected object) — this is what
+          // lets a single press-drag gesture both pick AND move an unselected object.
+          selectObject(hit.kind, hit.id);
+          const current = instancesRefByKind[hit.kind].current.find((o) => o.id === hit.id);
+          const startGround = groundPointAt(e.clientX, e.clientY);
+          if (current && startGround) {
+            t.objectDrag = {
+              kind: hit.kind,
+              id: hit.id,
+              startX: current.x,
+              startZ: current.z,
+              startGroundX: startGround.x,
+              startGroundZ: startGround.z,
+              moved: false,
+            };
+          }
+        } else {
+          t.dragging = true;
+        }
       }
       t.lastX = e.clientX;
       t.lastY = e.clientY;
@@ -779,26 +843,29 @@ export default function PackageBoxMockup() {
         return;
       }
 
+      if (t.objectDrag) {
+        const ground = groundPointAt(e.clientX, e.clientY);
+        if (!ground) return;
+        const d = t.objectDrag;
+        const worldDX = ground.x - d.startGroundX;
+        const worldDZ = ground.z - d.startGroundZ;
+        if (!d.moved && Math.hypot(worldDX, worldDZ) * (1 / SCALE) > 1) d.moved = true;
+        if (!d.moved) return;
+        const nextX = d.startX + worldDX / SCALE;
+        const nextZ = d.startZ + worldDZ / SCALE;
+        setInstancesByKind[d.kind]((prev) => prev.map((o) => (o.id === d.id ? { ...o, x: nextX, z: nextZ } : o)));
+        return;
+      }
+
       if (!t.dragging) return;
       t.azimuth -= dx * 0.007;
       t.elevation = Math.min(1.5, Math.max(-1.5, t.elevation + dy * 0.006));
     };
-    const onPointerUp = (e) => {
-      // a plain click (barely moved since pointerdown, left button, no space-pan) picks
-      // whichever box is under the cursor — separate from the orbit-drag gesture, which
-      // needs actual movement to have done anything. Guarded by canvasPointerActive so
-      // an unrelated click+release elsewhere in the UI (this listener is on window)
-      // can't be mistaken for a canvas click using stale down-position data.
-      if (t.canvasPointerActive) {
-        const moved = Math.hypot(e.clientX - t.downX, e.clientY - t.downY);
-        if (e.button === 0 && !t.panning && !spacePressedRef.current && moved < 4) {
-          const id = pickInstanceAt(e.clientX, e.clientY);
-          if (id != null) setSelectedBoxId(id);
-        }
-      }
+    const onPointerUp = () => {
       t.canvasPointerActive = false;
       t.dragging = false;
       t.panning = false;
+      t.objectDrag = null;
     };
     const onWheel = (e) => {
       if (e.ctrlKey || e.metaKey) return; // ctrl/cmd+wheel zooms the artboard instead — see the viewport-level handler
@@ -1142,12 +1209,21 @@ export default function PackageBoxMockup() {
     t.fullBox = fullBox;
     fitShadowToBox(t);
 
-    // ring under the selected box — only shown once there's more than one, since with
-    // a single box it's obvious which one the controls apply to
-    const selectedInst = t.instances[selectedBoxId];
+    // ring under whichever object is the active selection (any kind) — only shown once
+    // there's more than one object total, since with just one it's obvious which one
+    // the controls apply to.
     if (t.selectionMarker) {
-      if (selectedInst && boxInstances.length > 1) {
-        const selBox = new THREE.Box3().setFromObject(selectedInst.boxGroup);
+      const totalObjects = boxInstances.length + cardInstances.length + placeablePieces.length;
+      const selGroup =
+        activeSelection?.kind === "box"
+          ? t.instances[activeSelection.id]?.boxGroup
+          : activeSelection?.kind === "card"
+            ? t.cardInstancesTHREE[activeSelection.id]?.group
+            : activeSelection?.kind === "piece"
+              ? t.pieceInstancesTHREE[activeSelection.id]?.group
+              : null;
+      if (selGroup && totalObjects > 1) {
+        const selBox = new THREE.Box3().setFromObject(selGroup);
         const selSize = new THREE.Vector3();
         selBox.getSize(selSize);
         const radius = Math.max(selSize.x, selSize.z) * 0.5 * Math.SQRT2 + 0.08;
@@ -1167,7 +1243,7 @@ export default function PackageBoxMockup() {
     lidH,
     clearance,
     bevelRadius,
-    selectedBoxId,
+    activeSelection,
     cardInstances,
     cardW,
     cardD,
@@ -1579,33 +1655,8 @@ export default function PackageBoxMockup() {
     });
   };
 
-  const numField = (label, value, setValue, min = 1, max = 500) => (
-    <label className="flex items-center justify-between gap-2 text-sm">
-      <span style={{ color: "#a89f8f" }}>{label}</span>
-      <input
-        type="number"
-        value={value}
-        min={min}
-        max={max}
-        onChange={(e) => setValue(Math.max(min, Math.min(max, Number(e.target.value) || 0)))}
-        onKeyDown={(e) => {
-          if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
-          e.preventDefault();
-          const dir = e.key === "ArrowUp" ? 1 : -1;
-          const step = e.shiftKey ? 10 : e.ctrlKey || e.metaKey ? 0.1 : 1;
-          const next = Math.round((value + dir * step) * 10) / 10;
-          setValue(Math.max(min, Math.min(max, next)));
-        }}
-        className="no-spinner w-20 rounded px-2 py-1 text-right"
-        style={{
-          background: "#242220",
-          border: "1px solid #3a372f",
-          color: "#efe6d4",
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: "13px",
-        }}
-      />
-    </label>
+  const numField = (label, value, setValue, min = 1, max = 500, unit = "mm") => (
+    <ScrubField label={label} value={value} onChange={setValue} min={min} max={max} unit={unit} />
   );
 
   const imageUploadPanel = (
@@ -1874,13 +1925,13 @@ export default function PackageBoxMockup() {
     const id = nextBoxIdRef.current++;
     const spacing = bodyW + 40;
     setBoxInstances((prev) => [...prev, { id, ...DEFAULT_INSTANCE, x: prev.length * spacing }]);
-    setSelectedBoxId(id);
+    selectObject("box", id);
   };
   const duplicateBoxInstance = () => {
     const id = nextBoxIdRef.current++;
     const spacing = bodyW + 40;
     setBoxInstances((prev) => [...prev, { ...selectedInstance, id, linked: {}, x: selectedInstance.x + spacing }]);
-    setSelectedBoxId(id);
+    selectObject("box", id);
   };
   const removeBoxInstance = (id) => {
     if (boxInstances.length <= 1) return;
@@ -1951,7 +2002,7 @@ export default function PackageBoxMockup() {
     const id = nextCardIdRef.current++;
     const spacing = cardW + 20;
     setCardInstances((prev) => [...prev, { id, ...DEFAULT_CARD_INSTANCE, x: prev.length * spacing }]);
-    setSelectedCardId(id);
+    selectObject("card", id);
   };
   const duplicateCardInstance = (sourceId) => {
     const source = cardInstances.find((c) => c.id === sourceId);
@@ -1959,7 +2010,7 @@ export default function PackageBoxMockup() {
     const id = nextCardIdRef.current++;
     const spacing = cardW + 20;
     setCardInstances((prev) => [...prev, { ...source, id, x: source.x + spacing }]);
-    setSelectedCardId(id);
+    selectObject("card", id);
   };
   const removeCardInstance = (id) => {
     setCardInstances((prev) => {
@@ -2017,14 +2068,14 @@ export default function PackageBoxMockup() {
     const shapeDefId = pieceShapeDefs[0]?.id ?? addPieceShapeDef();
     const spacing = 40;
     setPieceInstances((prev) => [...prev, { id, ...DEFAULT_PIECE_INSTANCE, shapeDefId, x: prev.length * spacing }]);
-    setSelectedPieceId(id);
+    selectObject("piece", id);
   };
   const duplicatePieceInstance = (sourceId) => {
     const source = pieceInstances.find((p) => p.id === sourceId);
     if (!source) return;
     const id = nextPieceIdRef.current++;
     setPieceInstances((prev) => [...prev, { ...source, id, x: source.x + 40 }]);
-    setSelectedPieceId(id);
+    selectObject("piece", id);
   };
   const removePieceInstance = (id) => {
     setPieceInstances((prev) => {
@@ -2060,28 +2111,17 @@ export default function PackageBoxMockup() {
     );
   };
   const isLinked = (key) => !isReferenceSelected && !!selectedInstance.linked?.[key];
-  const instanceNumField = (label, key, min = -2000, max = 2000) => (
-    <label className="flex items-center justify-between gap-2 text-sm">
-      <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-        {label}
-        {linkToggle(key)}
-      </span>
-      <input
-        type="number"
-        value={displayValue(key)}
-        min={min}
-        max={max}
-        onChange={(e) => setParamValue(key, Math.max(min, Math.min(max, Number(e.target.value) || 0)))}
-        className="no-spinner w-20 rounded px-2 py-1 text-right"
-        style={{
-          background: "#242220",
-          border: `1px solid ${isLinked(key) ? "#5fd3d9" : "#3a372f"}`,
-          color: "#efe6d4",
-          fontFamily: "'JetBrains Mono', monospace",
-          fontSize: "13px",
-        }}
-      />
-    </label>
+  const instanceNumField = (label, key, min = -2000, max = 2000, unit) => (
+    <ScrubField
+      label={label}
+      value={displayValue(key)}
+      onChange={(v) => setParamValue(key, v)}
+      min={min}
+      max={max}
+      unit={unit}
+      linked={isLinked(key)}
+      endAdornment={linkToggle(key)}
+    />
   );
 
   return (
@@ -2174,7 +2214,7 @@ export default function PackageBoxMockup() {
             {boxInstances.map((b, i) => (
               <button
                 key={b.id}
-                onClick={() => setSelectedBoxId(b.id)}
+                onClick={() => selectObject("box", b.id)}
                 className="flex items-center gap-1 text-xs rounded pl-2 pr-1 py-1"
                 style={{
                   background: b.id === selectedInstance.id ? "#e2432a" : "#3a372f",
@@ -2217,42 +2257,12 @@ export default function PackageBoxMockup() {
             同じデザインの箱を並べて配置できます。下の位置・回転・傾き・蓋の開きは選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})に対する設定です。
           </p>
           <div className="grid grid-cols-2 gap-2 mb-2">
-            {instanceNumField("位置 X", "x", -2000, 2000)}
-            {instanceNumField("位置 Z", "z", -2000, 2000)}
+            {instanceNumField("位置 X", "x", -2000, 2000, "mm")}
+            {instanceNumField("位置 Z", "z", -2000, 2000, "mm")}
           </div>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-              回転(Y軸)
-              {linkToggle("rotY")}
-            </span>
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={0}
-                max={359}
-                value={displayValue("rotY")}
-                onChange={(e) => setParamValue("rotY", Math.max(0, Math.min(359, Math.round(Number(e.target.value)) || 0)))}
-                className="no-spinner w-14 rounded px-1 py-0.5 text-right"
-                style={{
-                  background: "#242220",
-                  border: `1px solid ${isLinked("rotY") ? "#5fd3d9" : "#3a372f"}`,
-                  color: "#efe6d4",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: "13px",
-                }}
-              />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>°</span>
-            </div>
+          <div className="mb-2">
+            {instanceNumField("回転(Y軸)", "rotY", 0, 359, "°")}
           </div>
-          <input
-            type="range"
-            min={0}
-            max={359}
-            step={1}
-            value={displayValue("rotY")}
-            onChange={(e) => setParamValue("rotY", Number(e.target.value))}
-            className="w-full mb-2"
-          />
           <div className="flex gap-1">
             {[
               { label: "正面", deg: 0 },
@@ -2309,56 +2319,13 @@ export default function PackageBoxMockup() {
               寝かせる
             </button>
           </div>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>角の丸み(半径)</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{bevelRadius}mm</span>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={10}
-            step={0.5}
-            value={bevelRadius}
-            onChange={(e) => setBevelRadius(Number(e.target.value))}
-            className="w-full"
-          />
+          <ScrubField label="角の丸み(半径)" value={bevelRadius} onChange={setBevelRadius} min={0} max={10} step={0.5} decimals={1} unit="mm" />
           <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
             角の丸みは全ての箱で共通です。置き方は箱ごとに変えられます(「連動」で箱1に合わせることもできます)。
           </p>
 
-          <div className="flex items-center justify-between text-sm mt-3 mb-1">
-            <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-              傾き(前後)
-              {linkToggle("tiltX")}
-            </span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{displayValue("tiltX")}°</span>
-          </div>
-          <input
-            type="range"
-            min={-45}
-            max={45}
-            step={1}
-            value={displayValue("tiltX")}
-            onChange={(e) => setParamValue("tiltX", Number(e.target.value))}
-            className="w-full"
-          />
-
-          <div className="flex items-center justify-between text-sm mt-3 mb-1">
-            <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-              傾き(左右)
-              {linkToggle("tiltZ")}
-            </span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{displayValue("tiltZ")}°</span>
-          </div>
-          <input
-            type="range"
-            min={-45}
-            max={45}
-            step={1}
-            value={displayValue("tiltZ")}
-            onChange={(e) => setParamValue("tiltZ", Number(e.target.value))}
-            className="w-full"
-          />
+          <div className="mt-3">{instanceNumField("傾き(前後)", "tiltX", -45, 45, "°")}</div>
+          <div className="mt-2">{instanceNumField("傾き(左右)", "tiltZ", -45, 45, "°")}</div>
           {(displayValue("tiltX") !== 0 || displayValue("tiltZ") !== 0) && (
             <button
               onClick={() => {
@@ -2374,38 +2341,7 @@ export default function PackageBoxMockup() {
         </div>
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-              蓋を開ける
-              {linkToggle("lidOpen")}
-            </span>
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={0}
-                max={100}
-                value={displayValue("lidOpen")}
-                onChange={(e) => setParamValue("lidOpen", Math.max(0, Math.min(100, Number(e.target.value) || 0)))}
-                className="no-spinner w-14 rounded px-1 py-0.5 text-right"
-                style={{
-                  background: "#242220",
-                  border: `1px solid ${isLinked("lidOpen") ? "#5fd3d9" : "#3a372f"}`,
-                  color: "#efe6d4",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: "13px",
-                }}
-              />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>%</span>
-            </div>
-          </div>
-          <input
-            type="range"
-            min={0}
-            max={100}
-            value={displayValue("lidOpen")}
-            onChange={(e) => setParamValue("lidOpen", Number(e.target.value))}
-            className="w-full"
-          />
+          {instanceNumField("蓋を開ける", "lidOpen", 0, 100, "%")}
           <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
             選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})のみに適用されます(「連動」で箱1に合わせることもできます)。
           </p>
@@ -2427,7 +2363,7 @@ export default function PackageBoxMockup() {
           symbols={symbols}
           cardInstances={cardInstances}
           selectedCardId={selectedCardId}
-          setSelectedCardId={setSelectedCardId}
+          onSelectCard={(id) => selectObject("card", id)}
           onAdd={addCardInstance}
           onDuplicate={duplicateCardInstance}
           onRemove={removeCardInstance}
@@ -2439,7 +2375,7 @@ export default function PackageBoxMockup() {
           symbols={symbols}
           pieceInstances={pieceInstances}
           selectedPieceId={selectedPieceId}
-          setSelectedPieceId={setSelectedPieceId}
+          onSelectPiece={(id) => selectObject("piece", id)}
           onAdd={addPieceInstance}
           onDuplicate={duplicatePieceInstance}
           onRemove={removePieceInstance}
@@ -2450,20 +2386,8 @@ export default function PackageBoxMockup() {
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
             アングル
           </div>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>遠近感(画角)</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{fov}°</span>
-          </div>
-          <input
-            type="range"
-            min={15}
-            max={90}
-            step={1}
-            value={fov}
-            onChange={(e) => setFov(Number(e.target.value))}
-            className="w-full mb-1"
-          />
-          <p className="text-xs mb-3" style={{ color: "#7d7568" }}>
+          <ScrubField label="遠近感(画角)" value={fov} onChange={setFov} min={15} max={90} unit="°" />
+          <p className="text-xs mb-3 mt-1" style={{ color: "#7d7568" }}>
             数値が小さいほど圧縮された望遠風、大きいほど広角で遠近感が強調されます。
           </p>
 
@@ -2544,39 +2468,7 @@ export default function PackageBoxMockup() {
             <input type="checkbox" checked={groundVisible} onChange={(e) => setGroundVisible(e.target.checked)} />
             地面を表示
           </label>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span className="flex items-center gap-1" style={{ color: "#a89f8f" }}>
-              地面からの高さ
-              {linkToggle("floatHeight")}
-            </span>
-            <div className="flex items-center gap-1">
-              <input
-                type="number"
-                min={-200}
-                max={500}
-                value={displayValue("floatHeight")}
-                onChange={(e) => setParamValue("floatHeight", Math.max(-200, Math.min(500, Number(e.target.value) || 0)))}
-                className="no-spinner w-16 rounded px-1 py-0.5 text-right"
-                style={{
-                  background: "#242220",
-                  border: `1px solid ${isLinked("floatHeight") ? "#5fd3d9" : "#3a372f"}`,
-                  color: "#efe6d4",
-                  fontFamily: "'JetBrains Mono', monospace",
-                  fontSize: "13px",
-                }}
-              />
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>mm</span>
-            </div>
-          </div>
-          <input
-            type="range"
-            min={-200}
-            max={500}
-            step={1}
-            value={displayValue("floatHeight")}
-            onChange={(e) => setParamValue("floatHeight", Number(e.target.value))}
-            className="w-full"
-          />
+          {instanceNumField("地面からの高さ", "floatHeight", -200, 500, "mm")}
           <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
             選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})のみに適用されます(「連動」で箱1に合わせることもできます)。
           </p>
@@ -2590,18 +2482,7 @@ export default function PackageBoxMockup() {
               />
               接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
             </label>
-            <label className="flex items-center justify-between gap-2 text-sm">
-              <span style={{ color: "#a89f8f" }}>レイヤー</span>
-              <input
-                type="number"
-                min={0}
-                max={20}
-                value={displayValue("layer") ?? 0}
-                onChange={(e) => setParamValue("layer", Math.max(0, Math.min(20, Math.round(Number(e.target.value)) || 0)))}
-                className="no-spinner w-16 rounded px-2 py-1 text-right"
-                style={{ background: "#242220", border: "1px solid #3a372f", color: "#efe6d4", fontFamily: "'JetBrains Mono', monospace", fontSize: "13px" }}
-              />
-            </label>
+            <ScrubField label="レイヤー" value={displayValue("layer") ?? 0} onChange={(v) => setParamValue("layer", Math.round(v))} min={0} max={20} />
             <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
               数字が大きいレイヤーほど上。接地オフのオブジェクトは「地面からの高さ」の数値がそのままY座標になります(自動配置の対象外)。
             </p>
@@ -2612,66 +2493,22 @@ export default function PackageBoxMockup() {
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
             ライティング(主光源)
           </div>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>光の向き</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{lightAzimuth}°</span>
+          <div className="mb-3">
+            <ScrubField label="光の向き" value={lightAzimuth} onChange={setLightAzimuth} min={-180} max={180} unit="°" />
           </div>
-          <input
-            type="range"
-            min={-180}
-            max={180}
-            step={1}
-            value={lightAzimuth}
-            onChange={(e) => setLightAzimuth(Number(e.target.value))}
-            className="w-full mb-3"
-          />
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>光の高さ</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{lightElevation}°</span>
-          </div>
-          <input
-            type="range"
-            min={10}
-            max={80}
-            step={1}
-            value={lightElevation}
-            onChange={(e) => setLightElevation(Number(e.target.value))}
-            className="w-full"
-          />
+          <ScrubField label="光の高さ" value={lightElevation} onChange={setLightElevation} min={10} max={80} unit="°" />
         </div>
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
             見え方の補正(色あせ対策)
           </div>
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>露出</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>{exposure.toFixed(2)}</span>
+          <div className="mb-3">
+            <ScrubField label="露出" value={exposure} onChange={setExposure} min={0.4} max={2} step={0.05} decimals={2} />
           </div>
-          <input
-            type="range"
-            min={0.4}
-            max={2}
-            step={0.05}
-            value={exposure}
-            onChange={(e) => setExposure(Number(e.target.value))}
-            className="w-full mb-3"
-          />
-          <div className="flex items-center justify-between text-sm mb-1">
-            <span style={{ color: "#a89f8f" }}>環境光の強さ</span>
-            <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>
-              {ambientBoost.toFixed(2)}
-            </span>
+          <div className="mb-3">
+            <ScrubField label="環境光の強さ" value={ambientBoost} onChange={setAmbientBoost} min={0} max={2} step={0.05} decimals={2} />
           </div>
-          <input
-            type="range"
-            min={0}
-            max={2}
-            step={0.05}
-            value={ambientBoost}
-            onChange={(e) => setAmbientBoost(Number(e.target.value))}
-            className="w-full mb-3"
-          />
           <p className="text-xs mb-2" style={{ color: "#7d7568" }}>
             環境光が強いと影が浅くなり色が白っぽく薄まって見えます。下げると発色が濃くなります。
           </p>
@@ -2707,50 +2544,33 @@ export default function PackageBoxMockup() {
             <p className="text-xs mb-2" style={{ color: "#7d7568" }}>
               露出・環境光はライティングの調整です。それでも印刷物より色が薄く見える場合は、下記で画像そのものの彩度・コントラストを直接補正できます。
             </p>
-            <div className="flex items-center justify-between text-sm mb-1">
-              <span style={{ color: "#a89f8f" }}>彩度</span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>
-                {colorCorrection.saturation}%
-              </span>
+            <div className="mb-3">
+              <ScrubField
+                label="彩度"
+                value={colorCorrection.saturation}
+                onChange={(v) => setColorCorrection((p) => ({ ...p, saturation: v }))}
+                min={50}
+                max={200}
+                unit="%"
+              />
             </div>
-            <input
-              type="range"
-              min={50}
-              max={200}
-              step={1}
-              value={colorCorrection.saturation}
-              onChange={(e) => setColorCorrection((p) => ({ ...p, saturation: Number(e.target.value) }))}
-              className="w-full mb-3"
-            />
-            <div className="flex items-center justify-between text-sm mb-1">
-              <span style={{ color: "#a89f8f" }}>コントラスト</span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>
-                {colorCorrection.contrast}%
-              </span>
+            <div className="mb-3">
+              <ScrubField
+                label="コントラスト"
+                value={colorCorrection.contrast}
+                onChange={(v) => setColorCorrection((p) => ({ ...p, contrast: v }))}
+                min={50}
+                max={150}
+                unit="%"
+              />
             </div>
-            <input
-              type="range"
-              min={50}
-              max={150}
-              step={1}
-              value={colorCorrection.contrast}
-              onChange={(e) => setColorCorrection((p) => ({ ...p, contrast: Number(e.target.value) }))}
-              className="w-full mb-3"
-            />
-            <div className="flex items-center justify-between text-sm mb-1">
-              <span style={{ color: "#a89f8f" }}>明るさ</span>
-              <span style={{ fontFamily: "'JetBrains Mono', monospace", color: "#efe6d4" }}>
-                {colorCorrection.brightness}%
-              </span>
-            </div>
-            <input
-              type="range"
-              min={50}
-              max={150}
-              step={1}
+            <ScrubField
+              label="明るさ"
               value={colorCorrection.brightness}
-              onChange={(e) => setColorCorrection((p) => ({ ...p, brightness: Number(e.target.value) }))}
-              className="w-full"
+              onChange={(v) => setColorCorrection((p) => ({ ...p, brightness: v }))}
+              min={50}
+              max={150}
+              unit="%"
             />
             {(colorCorrection.saturation !== 100 || colorCorrection.contrast !== 100 || colorCorrection.brightness !== 100) && (
               <button
@@ -2815,7 +2635,7 @@ export default function PackageBoxMockup() {
             className="absolute top-3 left-3 text-xs px-2 py-1 rounded"
             style={{ background: "rgba(28,26,23,0.85)", color: "#9c968a", pointerEvents: "none" }}
           >
-            ドラッグ:回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
+            オブジェクトをクリック:選択 / ドラッグ:移動 / それ以外をドラッグ:回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
           </div>
 
           <div

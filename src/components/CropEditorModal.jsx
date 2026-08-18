@@ -1,5 +1,6 @@
 import React, { useState, useRef } from "react";
 import { imgW, imgH, hexToRgba } from "../lib/imaging.js";
+import ScrubField from "./ScrubField.jsx";
 
 const CROP_MAX_W = 640;
 const CROP_MAX_H = 480;
@@ -122,33 +123,7 @@ export default function CropEditorModal({
   };
 
   const sliderControl = (label, value, onChange, { min = 0, max = 90, step = 0.5, decimals = 1, unit = "%" } = {}) => (
-    <div className="flex items-center gap-2">
-      <span className="text-xs flex-shrink-0" style={{ color: "#a89f8f", width: "28px" }}>
-        {label}
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1"
-      />
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Math.round(value * 10 ** decimals) / 10 ** decimals}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="text-xs rounded px-1 py-0.5 flex-shrink-0"
-        style={{ width: "48px", background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
-      />
-      <span className="text-xs flex-shrink-0" style={{ color: "#7d7568", width: "14px" }}>
-        {unit}
-      </span>
-    </div>
+    <ScrubField label={label} value={value} onChange={onChange} min={min} max={max} step={step} decimals={decimals} unit={unit} />
   );
 
   return (

@@ -1,5 +1,6 @@
 import React from "react";
 import { PIECE_SHAPE_KINDS } from "../lib/shapes2d.js";
+import ScrubField from "./ScrubField.jsx";
 
 // piece shape library: a small reusable set of GEOMETRY definitions (as opposed to the
 // symbol library, which is images) — define a shape (preset, later also custom SVG)
@@ -98,58 +99,14 @@ export default function PieceShapeLibraryPanel({ shapeDefs, onAdd, onAddFromSvg,
                 ))}
               </div>
             )}
-            <div className="grid grid-cols-3 gap-1">
-              <label className="flex flex-col text-xs" style={{ color: "#a89f8f" }}>
-                幅mm
-                <input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={d.w}
-                  onChange={(e) => onUpdate(d.id, { w: Math.max(1, Number(e.target.value) || 1) })}
-                  className="no-spinner rounded px-1 py-0.5 text-right"
-                  style={{ background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
-                />
-              </label>
-              <label className="flex flex-col text-xs" style={{ color: "#a89f8f" }}>
-                奥行mm
-                <input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={d.d}
-                  onChange={(e) => onUpdate(d.id, { d: Math.max(1, Number(e.target.value) || 1) })}
-                  className="no-spinner rounded px-1 py-0.5 text-right"
-                  style={{ background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
-                />
-              </label>
-              <label className="flex flex-col text-xs" style={{ color: "#a89f8f" }}>
-                高さmm
-                <input
-                  type="number"
-                  min={1}
-                  max={500}
-                  value={d.thickness}
-                  onChange={(e) => onUpdate(d.id, { thickness: Math.max(1, Number(e.target.value) || 1) })}
-                  className="no-spinner rounded px-1 py-0.5 text-right"
-                  style={{ background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
-                />
-              </label>
+            <div className="flex flex-col gap-1">
+              <ScrubField label="幅" value={d.w} onChange={(v) => onUpdate(d.id, { w: Math.max(1, v) })} min={1} max={500} unit="mm" />
+              <ScrubField label="奥行" value={d.d} onChange={(v) => onUpdate(d.id, { d: Math.max(1, v) })} min={1} max={500} unit="mm" />
+              <ScrubField label="高さ" value={d.thickness} onChange={(v) => onUpdate(d.id, { thickness: Math.max(1, v) })} min={1} max={500} unit="mm" />
+              {d.kind === "roundedSquare" && (
+                <ScrubField label="角の丸み" value={d.cornerFrac} onChange={(v) => onUpdate(d.id, { cornerFrac: v })} min={0} max={0.5} step={0.01} decimals={2} />
+              )}
             </div>
-            {d.kind === "roundedSquare" && (
-              <label className="flex items-center justify-between text-xs" style={{ color: "#a89f8f" }}>
-                角の丸み
-                <input
-                  type="range"
-                  min={0}
-                  max={0.5}
-                  step={0.01}
-                  value={d.cornerFrac}
-                  onChange={(e) => onUpdate(d.id, { cornerFrac: Number(e.target.value) })}
-                  style={{ width: "60%" }}
-                />
-              </label>
-            )}
           </div>
         ))}
       </div>
