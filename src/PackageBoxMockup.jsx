@@ -1875,6 +1875,14 @@ export default function PackageBoxMockup() {
           書き出し設定
         </div>
 
+        <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
+          解像度(プレビューに対する倍率)
+        </div>
+        <ScrubField label="倍率" value={exportScale} onChange={setExportScale} min={0.5} max={8} step={0.5} decimals={1} unit="×" />
+        <p className="text-xs mt-2 mb-4" style={{ color: "#7d7568" }}>
+          出力サイズ: {exportOutW} × {exportOutH} px(プレビュー {artboardW} × {artboardH} px の{exportScale}倍)
+        </p>
+
         <label className="flex items-center gap-2 text-xs mb-2" style={{ color: "#a89f8f" }}>
           <input
             type="checkbox"
@@ -1884,7 +1892,7 @@ export default function PackageBoxMockup() {
           背景を透過にして書き出す
         </label>
         <label
-          className="flex items-center gap-2 text-xs mb-3 ml-5"
+          className="flex items-center gap-2 text-xs mb-4 ml-5"
           style={{ color: transparentExport ? "#a89f8f" : "#5c584a" }}
         >
           <input
@@ -1895,30 +1903,6 @@ export default function PackageBoxMockup() {
           />
           画像サイズをコンポーネントに合わせる(余白をトリミング)
         </label>
-
-        <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
-          解像度(プレビューに対する倍率)
-        </div>
-        <div className="flex gap-1 mb-2">
-          {[1, 2, 3, 4].map((s) => (
-            <button
-              key={s}
-              onClick={() => setExportScale(s)}
-              className="flex-1 text-xs rounded py-1"
-              style={{
-                background: exportScale === s ? "#e2432a" : "#3a372f",
-                color: exportScale === s ? "#1c1a17" : "#efe6d4",
-                fontWeight: exportScale === s ? 600 : 400,
-              }}
-            >
-              {s}×
-            </button>
-          ))}
-        </div>
-        <ScrubField label="倍率" value={exportScale} onChange={setExportScale} min={0.5} max={8} step={0.5} decimals={1} unit="×" />
-        <p className="text-xs mt-2 mb-4" style={{ color: "#7d7568" }}>
-          出力サイズ: {exportOutW} × {exportOutH} px(プレビュー {artboardW} × {artboardH} px の{exportScale}倍)
-        </p>
 
         <div className="flex gap-2">
           <button
@@ -2311,20 +2295,10 @@ export default function PackageBoxMockup() {
         <div className="flex-1" />
         <button
           onClick={() => setExportSettingsOpen(true)}
-          className="text-sm rounded px-2 py-1.5"
-          style={{ background: "#3a372f", color: "#a89f8f" }}
-          title="書き出し設定(解像度・透過)を開く"
-        >
-          ⚙
-        </button>
-        <button
-          onClick={exportRender}
-          disabled={exporting}
           className="text-sm rounded px-4 py-1.5"
           style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
-          title="現在の書き出し設定でPNGを書き出します"
         >
-          {exporting ? "書き出し中…" : "書き出し"}
+          書き出し
         </button>
       </div>
 
