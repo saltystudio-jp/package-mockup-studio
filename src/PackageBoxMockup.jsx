@@ -394,7 +394,19 @@ export default function PackageBoxMockup() {
   const [bevelRadius, setBevelRadius] = useState(2);
   const [fov, setFov] = useState(35);
   const [transparentExport, setTransparentExport] = useState(false);
-  const [exportLongEdge, setExportLongEdge] = useState(3000);
+  // trims the exported PNG to the content's own bounding box (vs. leaving it at the
+  // full preview canvas size) — only meaningful once the background is transparent
+  // (that's what lets the trim detect "content" vs "empty" by alpha), so toggling
+  // transparency off forces this off too rather than leaving a checked-but-inert box.
+  const [fitToContent, setFitToContent] = useState(false);
+  const setTransparentExportGated = (v) => {
+    setTransparentExport(v);
+    if (!v) setFitToContent(false);
+  };
+  // output resolution is the current preview's own pixel size (artboardW/H) times this
+  // multiplier — no separate target-resolution field to keep in sync with the preview.
+  const [exportScale, setExportScale] = useState(2);
+  const [exportSettingsOpen, setExportSettingsOpen] = useState(false);
   const [lightAzimuth, setLightAzimuth] = useState(49);
   const [lightElevation, setLightElevation] = useState(46);
   const [groundVisible, setGroundVisible] = useState(true);
@@ -1698,7 +1710,7 @@ export default function PackageBoxMockup() {
       const container = mountRef.current;
       const cw = container.clientWidth;
       const ch = container.clientHeight;
-      const scaleFactor = exportLongEdge / Math.max(cw, ch);
+      const scaleFactor = exportScale;
 
       const prevBackground = t.scene.background;
       const prevClearColor = new THREE.Color();
@@ -1723,7 +1735,7 @@ export default function PackageBoxMockup() {
       outCanvas.width = t.renderer.domElement.width;
       outCanvas.height = t.renderer.domElement.height;
       outCanvas.getContext("2d").drawImage(t.renderer.domElement, 0, 0);
-      if (transparentExport) outCanvas = trimTransparentCanvas(outCanvas);
+      if (transparentExport && fitToContent) outCanvas = trimTransparentCanvas(outCanvas);
       const url = outCanvas.toDataURL("image/png");
       t.renderer.setSize(cw, ch, false);
 
@@ -1854,66 +1866,81 @@ export default function PackageBoxMockup() {
     );
   };
 
-  const exportSettingsCard = (
-    <div
-      className="flex-shrink-0 rounded-lg p-3 flex flex-col"
-      style={{ width: "260px", background: "#242220", border: "1px solid #5a4a2f", height: "100%" }}
-    >
-      <div className="text-xs uppercase mb-2 flex-shrink-0" style={{ color: "#c9a15a", letterSpacing: "0.08em" }}>
-        書き出し設定
-      </div>
-      <label className="flex items-center gap-2 text-xs mb-3" style={{ color: "#a89f8f" }}>
-        <input
-          type="checkbox"
-          checked={transparentExport}
-          onChange={(e) => setTransparentExport(e.target.checked)}
-        />
-        背景を透過にして書き出す(箱だけにトリミング)
-      </label>
+  const exportOutW = Math.round(artboardW * exportScale);
+  const exportOutH = Math.round(artboardH * exportScale);
+  const exportSettingsDialog = exportSettingsOpen && (
+    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)", zIndex: 50 }}>
+      <div className="rounded-lg p-4" style={{ background: "#1c1a17", border: "1px solid #3a372f", width: "340px" }}>
+        <div className="text-sm font-semibold mb-3" style={{ color: "#efe6d4" }}>
+          書き出し設定
+        </div>
 
-      <div className="flex items-center justify-between text-sm mb-1">
-        <span style={{ color: "#a89f8f" }}>解像度(長辺)</span>
-        <div className="flex items-center gap-1">
+        <label className="flex items-center gap-2 text-xs mb-2" style={{ color: "#a89f8f" }}>
           <input
-            type="number"
-            min={500}
-            max={8000}
-            step={100}
-            value={exportLongEdge}
-            onChange={(e) =>
-              setExportLongEdge(Math.max(500, Math.min(8000, Number(e.target.value) || 0)))
-            }
-            className="text-xs rounded px-1 py-0.5 text-right"
-            style={{ width: "60px", background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
+            type="checkbox"
+            checked={transparentExport}
+            onChange={(e) => setTransparentExportGated(e.target.checked)}
           />
-          <span style={{ fontSize: "11px", color: "#7d7568" }}>px</span>
+          背景を透過にして書き出す
+        </label>
+        <label
+          className="flex items-center gap-2 text-xs mb-3 ml-5"
+          style={{ color: transparentExport ? "#a89f8f" : "#5c584a" }}
+        >
+          <input
+            type="checkbox"
+            checked={fitToContent}
+            disabled={!transparentExport}
+            onChange={(e) => setFitToContent(e.target.checked)}
+          />
+          画像サイズをコンポーネントに合わせる(余白をトリミング)
+        </label>
+
+        <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
+          解像度(プレビューに対する倍率)
+        </div>
+        <div className="flex gap-1 mb-2">
+          {[1, 2, 3, 4].map((s) => (
+            <button
+              key={s}
+              onClick={() => setExportScale(s)}
+              className="flex-1 text-xs rounded py-1"
+              style={{
+                background: exportScale === s ? "#e2432a" : "#3a372f",
+                color: exportScale === s ? "#1c1a17" : "#efe6d4",
+                fontWeight: exportScale === s ? 600 : 400,
+              }}
+            >
+              {s}×
+            </button>
+          ))}
+        </div>
+        <ScrubField label="倍率" value={exportScale} onChange={setExportScale} min={0.5} max={8} step={0.5} decimals={1} unit="×" />
+        <p className="text-xs mt-2 mb-4" style={{ color: "#7d7568" }}>
+          出力サイズ: {exportOutW} × {exportOutH} px(プレビュー {artboardW} × {artboardH} px の{exportScale}倍)
+        </p>
+
+        <div className="flex gap-2">
+          <button
+            onClick={() => setExportSettingsOpen(false)}
+            className="flex-1 text-sm rounded py-2"
+            style={{ background: "#3a372f", color: "#efe6d4" }}
+          >
+            閉じる
+          </button>
+          <button
+            onClick={() => {
+              exportRender();
+              setExportSettingsOpen(false);
+            }}
+            disabled={exporting}
+            className="flex-1 text-sm rounded py-2"
+            style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
+          >
+            {exporting ? "書き出し中…" : "書き出す"}
+          </button>
         </div>
       </div>
-      <div className="flex gap-1 mb-3">
-        {[2000, 3000, 4000, 6000].map((px) => (
-          <button
-            key={px}
-            onClick={() => setExportLongEdge(px)}
-            className="flex-1 text-xs rounded py-1"
-            style={{
-              background: exportLongEdge === px ? "#e2432a" : "#3a372f",
-              color: exportLongEdge === px ? "#1c1a17" : "#efe6d4",
-              fontWeight: exportLongEdge === px ? 600 : 400,
-            }}
-          >
-            {px}
-          </button>
-        ))}
-      </div>
-
-      <button
-        onClick={exportRender}
-        disabled={exporting}
-        className="w-full mt-auto text-sm rounded py-2"
-        style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
-      >
-        {exporting ? "書き出し中…" : transparentExport ? "透過PNGを書き出す" : "高解像度PNGを書き出す"}
-      </button>
     </div>
   );
 
@@ -2283,11 +2310,19 @@ export default function PackageBoxMockup() {
         </h1>
         <div className="flex-1" />
         <button
+          onClick={() => setExportSettingsOpen(true)}
+          className="text-sm rounded px-2 py-1.5"
+          style={{ background: "#3a372f", color: "#a89f8f" }}
+          title="書き出し設定(解像度・透過)を開く"
+        >
+          ⚙
+        </button>
+        <button
           onClick={exportRender}
           disabled={exporting}
           className="text-sm rounded px-4 py-1.5"
           style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
-          title="現在の書き出し設定(解像度・透過)でPNGを書き出します。詳細設定はアセット引き出し内にあります。"
+          title="現在の書き出し設定でPNGを書き出します"
         >
           {exporting ? "書き出し中…" : "書き出し"}
         </button>
@@ -2926,11 +2961,11 @@ export default function PackageBoxMockup() {
           onUpdate={updatePieceShapeDef}
           onRemove={removePieceShapeDef}
         />
-
-        {exportSettingsCard}
       </div>
       )}
       </div>
+
+      {exportSettingsDialog}
 
       {cropEditor && (
         <CropEditorModal
