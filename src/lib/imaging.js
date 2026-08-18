@@ -232,3 +232,36 @@ export function detectAlphaCornerRadiusPx(canvas) {
   const avgInset = corners.reduce((a, b) => a + b, 0) / corners.length;
   return Math.round(toRadius(avgInset));
 }
+
+// a best-guess classifier among our own preset shapes (circle vs. rounded-rect/square)
+// from an uploaded PNG's alpha silhouette — NOT a general shape recognizer (telling a
+// hexagon from a triangle from an arbitrary logo would need real contour/corner
+// analysis, out of scope here). Works off a single number: how much of the opaque
+// silhouette's own bounding box it actually fills. A circle/ellipse fills about
+// pi/4 (~0.785) of its bounding box; a sharp-cornered rectangle fills ~1.0; a
+// rounded-rect sits in between depending on corner radius — so a low fill ratio reads
+// as "circle", anything higher reads as "rounded-rect" (whose corner radius the
+// separate detectAlphaCornerRadiusPx call above already estimates precisely).
+export function detectAlphaShapeKind(canvas) {
+  const { width, height } = canvas;
+  const ctx = canvas.getContext("2d");
+  const { data } = ctx.getImageData(0, 0, width, height);
+  const ALPHA_THRESHOLD = 16;
+  let minX = width, minY = height, maxX = -1, maxY = -1, opaqueCount = 0;
+  for (let y = 0; y < height; y++) {
+    const rowStart = y * width * 4;
+    for (let x = 0; x < width; x++) {
+      if (data[rowStart + x * 4 + 3] >= ALPHA_THRESHOLD) {
+        opaqueCount++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  if (maxX < minX || maxY < minY) return null;
+  const boxArea = (maxX - minX + 1) * (maxY - minY + 1);
+  const fillRatio = opaqueCount / boxArea;
+  return fillRatio < 0.85 ? "circle" : "roundedSquare";
+}

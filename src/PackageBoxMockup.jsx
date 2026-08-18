@@ -4,11 +4,9 @@ import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeom
 import CropEditorModal from "./components/CropEditorModal.jsx";
 import ScrubField from "./components/ScrubField.jsx";
 import Outliner from "./components/Outliner.jsx";
-import CardPanel from "./components/CardPanel.jsx";
-import PiecePanel from "./components/PiecePanel.jsx";
-import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
-import PieceShapeLibraryPanel from "./components/PieceShapeLibraryPanel.jsx";
-import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry, parseSvgToUnitShapes, roundedRectShape } from "./lib/shapes2d.js";
+import ComponentInstancePanel from "./components/ComponentInstancePanel.jsx";
+import ComponentLibraryPanel from "./components/ComponentLibraryPanel.jsx";
+import { buildComponentGeometry, parseSvgToUnitShapes } from "./lib/shapes2d.js";
 import {
   imgW,
   imgH,
@@ -21,9 +19,10 @@ import {
   makePasteHandler,
   coverFitRepeatOffset,
   detectAlphaCornerRadiusPx,
+  detectAlphaShapeKind,
   cropToCanvas,
 } from "./lib/imaging.js";
-import { createSymbol, buildSymbolFaceCanvas, symbolAspect, DEFAULT_SYMBOL_COLOR } from "./lib/symbols.js";
+import { createComponent, buildComponentFaceCanvas, componentAspect, DEFAULT_COMPONENT_COLOR } from "./lib/components.js";
 import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
 import { resolveStacking } from "./lib/stacking.js";
 
@@ -452,59 +451,35 @@ export default function PackageBoxMockup() {
   const [selectedBoxId, setSelectedBoxId] = useState(1);
   const nextBoxIdRef = useRef(2);
 
-  // ---- symbol library: shared image+crop+color assets, referenced by card (and
-  // later piece) instances instead of uploading a separate image per instance ----
-  const [symbols, setSymbols] = useState([]);
-  const nextSymbolIdRef = useRef(1);
-  const nextSymbolNumRef = useRef(1);
+  // ---- unified component library: replaces the old separate symbol library
+  // (image+color) and piece shape library (kind+dims) — a "card" and a "piece" are no
+  // longer different data types, just different quick-start PRESETS offered when
+  // registering a new component (see COMPONENT_PRESETS in lib/components.js). Each
+  // component bundles shape kind, its own W/D/thickness/cornerRadius, a tint color, and
+  // an optional image — everything needed to both build its geometry and texture it. ----
+  const [components, setComponents] = useState([]);
+  const nextComponentIdRef = useRef(1);
+  const nextComponentNumRef = useRef(1);
 
-  // ---- cards: design is global (shared shape/size), placement is per-instance —
-  // same split as the box above. Cards start empty (opt-in feature, unlike the box
-  // which always has one instance since it's the app's core object). ----
-  const [cardW, setCardW] = useState(63);
-  const [cardD, setCardD] = useState(88);
-  const [cardThickness, setCardThickness] = useState(1.5);
-  const [cardCornerRadius, setCardCornerRadius] = useState(3);
-  const DEFAULT_CARD_INSTANCE = {
+  // ---- component instances: placement of ONE registered component in the scene.
+  // Replaces the separate cardInstances/pieceInstances arrays — since shape now lives
+  // on the component itself, an instance only needs to say WHICH component plus its
+  // own placement (same role symbolId+shapeDefId used to split across two fields). ----
+  const DEFAULT_COMPONENT_INSTANCE = {
     x: 0,
     z: 0,
     rotY: 0,
     tiltX: 0,
     tiltZ: 0,
     orientation: "lying",
-    symbolId: null,
+    componentId: null,
     floatHeight: 0,
     layer: 0,
     groundSnap: true,
   };
-  const [cardInstances, setCardInstances] = useState([]);
-  const [selectedCardId, setSelectedCardId] = useState(null);
-  const nextCardIdRef = useRef(1);
-
-  // ---- pieces (駒): unlike the box/card (one shared design for every copy), a scene
-  // typically has several DIFFERENT piece types (pawn vs king, say) — so shape is its
-  // own small reusable library (mirroring the symbol library's "define once, reference
-  // from instances" pattern) instead of one global piece design. Each piece instance
-  // then picks both a shape def (geometry) and a symbol (top-face image + body color). ----
-  const DEFAULT_PIECE_SHAPE_DEF = { kind: "circle", w: 25, d: 25, thickness: 8, cornerFrac: 0.18 };
-  const [pieceShapeDefs, setPieceShapeDefs] = useState([]);
-  const nextPieceShapeIdRef = useRef(1);
-  const nextPieceShapeNumRef = useRef(1);
-  const DEFAULT_PIECE_INSTANCE = {
-    x: 0,
-    z: 0,
-    rotY: 0,
-    tiltX: 0,
-    tiltZ: 0,
-    shapeDefId: null,
-    symbolId: null,
-    floatHeight: 0,
-    layer: 1,
-    groundSnap: true,
-  };
-  const [pieceInstances, setPieceInstances] = useState([]);
-  const [selectedPieceId, setSelectedPieceId] = useState(null);
-  const nextPieceIdRef = useRef(1);
+  const [componentInstances, setComponentInstances] = useState([]);
+  const [selectedComponentInstanceId, setSelectedComponentInstanceId] = useState(null);
+  const nextComponentInstanceIdRef = useRef(1);
 
   // unifies the three independent per-kind selections above into one "what is the
   // viewport ring / click-to-pick currently pointing at" concept — kept ADDITIVE
@@ -516,8 +491,7 @@ export default function PackageBoxMockup() {
   const selectObject = (kind, id) => {
     setActiveSelection({ kind, id });
     if (kind === "box") setSelectedBoxId(id);
-    else if (kind === "card") setSelectedCardId(id);
-    else if (kind === "piece") setSelectedPieceId(id);
+    else if (kind === "component") setSelectedComponentInstanceId(id);
   };
 
   const mountRef = useRef(null);
@@ -527,8 +501,7 @@ export default function PackageBoxMockup() {
   const lidGuideCanvasRef = useRef(null);
   const lidInnerGuideCanvasRef = useRef(null);
   const boxInstancesRef = useRef(boxInstances);
-  const cardInstancesRef = useRef(cardInstances);
-  const pieceInstancesRef = useRef(pieceInstances);
+  const componentInstancesRef = useRef(componentInstances);
   const autoRotateRef = useRef(false);
   const sidebarDragRef = useRef(null);
   const bottomBarDragRef = useRef(null);
@@ -559,11 +532,8 @@ export default function PackageBoxMockup() {
     boxInstancesRef.current = boxInstances;
   }, [boxInstances]);
   useEffect(() => {
-    cardInstancesRef.current = cardInstances;
-  }, [cardInstances]);
-  useEffect(() => {
-    pieceInstancesRef.current = pieceInstances;
-  }, [pieceInstances]);
+    componentInstancesRef.current = componentInstances;
+  }, [componentInstances]);
   useEffect(() => {
     autoRotateRef.current = autoRotate;
   }, [autoRotate]);
@@ -696,89 +666,46 @@ export default function PackageBoxMockup() {
     };
     t.syncInstances = syncInstances;
 
-    // cards: unlike the box (one shared material set for every copy, since the box
-    // design is uniform), each card instance can show a DIFFERENT symbol — so geometry
-    // is shared but every card instance gets its OWN material set, rebuilt whenever its
-    // symbol assignment changes (see the card texture effect below).
-    const allCardsGroup = new THREE.Group();
-    scene.add(allCardsGroup);
-    // built via the shape+extrude pipeline (shapes2d.js), NOT RoundedBoxGeometry — see
-    // the comment at the top of shapes2d.js for why: a card's corners should round but
-    // its thin edge profile should stay sharp, which RoundedBoxGeometry can't express
-    // (it rounds every edge uniformly). 3 materials (bottom/top/side), same convention
-    // as pieces — index 1 is the top cap where the symbol image goes.
-    const cardGeo = buildExtrudedPieceGeometry(roundedRectShape(0.63, 0.88, 0.03), {
-      widthUnits: 1,
-      depthUnits: 1,
-      thicknessUnits: 0.015,
-    });
-    const cardInstancesTHREE = {};
-    const syncCardInstances = (ids) => {
-      const idSet = new Set(ids);
-      Object.keys(cardInstancesTHREE).forEach((key) => {
+    // components (unified card+piece): geometry is shared PER COMPONENT (not one
+    // single shared geometry like the box, since different instances can reference
+    // different components), and materials are per-instance (3 slots: bottom/top/side
+    // — see splitCapGroups in shapes2d.js for why extruded geometry needs a custom
+    // 3-way split instead of BoxGeometry's built-in 6 face groups), rebuilt whenever
+    // that instance's component assignment changes (see the texture effect below).
+    const allComponentsGroup = new THREE.Group();
+    scene.add(allComponentsGroup);
+    const componentGeos = {};
+    const componentInstancesTHREE = {};
+    const syncComponentInstances = (items) => {
+      const idSet = new Set(items.map((p) => p.id));
+      Object.keys(componentInstancesTHREE).forEach((key) => {
         if (idSet.has(Number(key))) return;
-        const rec = cardInstancesTHREE[key];
+        const rec = componentInstancesTHREE[key];
         rec.mats.forEach((m) => {
           if (m.map) m.map.dispose();
           m.dispose();
         });
-        allCardsGroup.remove(rec.group);
-        delete cardInstancesTHREE[key];
+        allComponentsGroup.remove(rec.group);
+        delete componentInstancesTHREE[key];
       });
-      ids.forEach((id) => {
-        if (cardInstancesTHREE[id]) return;
-        const mats = Array.from({ length: 3 }, () => makeFaceMaterial());
-        const mesh = new THREE.Mesh(t.cardGeo, mats);
-        mesh.castShadow = true;
-        mesh.receiveShadow = true;
-        mesh.userData = { kind: "card", instanceId: id };
-        const group = new THREE.Group();
-        group.add(mesh);
-        allCardsGroup.add(group);
-        cardInstancesTHREE[id] = { group, mesh, mats };
-      });
-    };
-    t.syncCardInstances = syncCardInstances;
-
-    // pieces: geometry is shared PER SHAPE DEF (not one single shared geometry like the
-    // box, since different piece instances can reference different shape defs), and
-    // materials are per-instance like cards (3 slots: bottom/top/side — see
-    // splitCapGroups in shapes2d.js for why extruded geometry needs a custom 3-way
-    // split instead of BoxGeometry's built-in 6 face groups).
-    const allPiecesGroup = new THREE.Group();
-    scene.add(allPiecesGroup);
-    const pieceShapeGeos = {};
-    const pieceInstancesTHREE = {};
-    const syncPieceInstances = (pieces) => {
-      const idSet = new Set(pieces.map((p) => p.id));
-      Object.keys(pieceInstancesTHREE).forEach((key) => {
-        if (idSet.has(Number(key))) return;
-        const rec = pieceInstancesTHREE[key];
-        rec.mats.forEach((m) => {
-          if (m.map) m.map.dispose();
-          m.dispose();
-        });
-        allPiecesGroup.remove(rec.group);
-        delete pieceInstancesTHREE[key];
-      });
-      pieces.forEach(({ id, shapeDefId }) => {
-        if (pieceInstancesTHREE[id]) {
-          pieceInstancesTHREE[id].mesh.geometry = pieceShapeGeos[shapeDefId] || pieceInstancesTHREE[id].mesh.geometry;
+      items.forEach(({ id, componentId }) => {
+        if (componentInstancesTHREE[id]) {
+          componentInstancesTHREE[id].mesh.geometry = componentGeos[componentId] || componentInstancesTHREE[id].mesh.geometry;
           return;
         }
         const mats = Array.from({ length: 3 }, () => makeFaceMaterial());
-        const geo = pieceShapeGeos[shapeDefId];
+        const geo = componentGeos[componentId];
         const mesh = new THREE.Mesh(geo, mats);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
-        mesh.userData = { kind: "piece", instanceId: id };
+        mesh.userData = { kind: "component", instanceId: id };
         const group = new THREE.Group();
         group.add(mesh);
-        allPiecesGroup.add(group);
-        pieceInstancesTHREE[id] = { group, mesh, mats };
+        allComponentsGroup.add(group);
+        componentInstancesTHREE[id] = { group, mesh, mats };
       });
     };
-    t.syncPieceInstances = syncPieceInstances;
+    t.syncComponentInstances = syncComponentInstances;
 
     t.scene = scene;
     t.camera = camera;
@@ -790,12 +717,9 @@ export default function PackageBoxMockup() {
     t.allBoxesGroup = allBoxesGroup;
     t.instances = instances;
     t.ground = ground;
-    t.allCardsGroup = allCardsGroup;
-    t.cardGeo = cardGeo;
-    t.cardInstancesTHREE = cardInstancesTHREE;
-    t.allPiecesGroup = allPiecesGroup;
-    t.pieceShapeGeos = pieceShapeGeos;
-    t.pieceInstancesTHREE = pieceInstancesTHREE;
+    t.allComponentsGroup = allComponentsGroup;
+    t.componentGeos = componentGeos;
+    t.componentInstancesTHREE = componentInstancesTHREE;
 
     // keeps the shadow map's coverage tracking the current scene bounds. Always safe
     // to call automatically (including live during a drag) since — unlike the orbit
@@ -803,8 +727,7 @@ export default function PackageBoxMockup() {
     // adjusts an invisible shadow-casting frustum.
     t.updateShadowFit = () => {
       const fullBox = new THREE.Box3().setFromObject(allBoxesGroup);
-      if (allCardsGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allCardsGroup));
-      if (allPiecesGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allPiecesGroup));
+      if (allComponentsGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allComponentsGroup));
       t.fullBox = fullBox;
       fitShadowToBox(t);
     };
@@ -838,7 +761,7 @@ export default function PackageBoxMockup() {
       pointerNdc.x = ((clientX - rect.left) / rect.width) * 2 - 1;
       pointerNdc.y = -((clientY - rect.top) / rect.height) * 2 + 1;
       raycaster.setFromCamera(pointerNdc, camera);
-      const targets = [...allBoxesGroup.children, ...allCardsGroup.children, ...allPiecesGroup.children];
+      const targets = [...allBoxesGroup.children, ...allComponentsGroup.children];
       const hits = raycaster.intersectObjects(targets, true);
       const hit = hits.find((h) => h.object.userData.instanceId != null);
       return hit ? { kind: hit.object.userData.kind, id: hit.object.userData.instanceId } : null;
@@ -857,12 +780,11 @@ export default function PackageBoxMockup() {
       return raycaster.ray.intersectPlane(dragPlane, dragPoint);
     };
 
-    const instancesRefByKind = { box: boxInstancesRef, card: cardInstancesRef, piece: pieceInstancesRef };
-    const setInstancesByKind = { box: setBoxInstances, card: setCardInstances, piece: setPieceInstances };
+    const instancesRefByKind = { box: boxInstancesRef, component: componentInstancesRef };
+    const setInstancesByKind = { box: setBoxInstances, component: setComponentInstances };
     const groupByKind = {
       box: (id) => t.instances[id]?.boxGroup,
-      card: (id) => t.cardInstancesTHREE[id]?.group,
-      piece: (id) => t.pieceInstancesTHREE[id]?.group,
+      component: (id) => t.componentInstancesTHREE[id]?.group,
     };
     // projects a world position to viewport pixel coordinates — used to find where an
     // object's own center sits on screen, so right-drag-to-rotate can measure the angle
@@ -1154,54 +1076,28 @@ export default function PackageBoxMockup() {
     });
   }, [bodyW, bodyD, bodyH, lidH, clearance, bevelRadius]);
 
-  // ---- rebuild the shared card geometry when dims/corner radius change. Built at true
-  // scale (roundedRectShape takes real width/depth/radius) so the corner radius stays a
-  // true circular arc regardless of how different cardW and cardD are — see the
-  // shapes2d.js comment for why RoundedBoxGeometry can't express "round corners, sharp
-  // edge" the way a real card needs. ----
+  // ---- rebuild each COMPONENT's own geometry when its kind/dims/corner radius change.
+  // One geometry per component (shared across every instance that references it),
+  // built via buildComponentGeometry — true-scale rounded-rect for roundedSquare (see
+  // shapes2d.js for why RoundedBoxGeometry can't express "round corners, sharp edge
+  // profile"), unit-shape+scale for circle/hexagon/triangle/svg. Reassigning this
+  // geometry to whichever instances currently reference it happens in the combined
+  // placement effect below (it reads t.componentGeos fresh every pass), not here —
+  // this effect only owns the geometry cache itself. ----
   useEffect(() => {
     const t = three.current;
-    if (!t.cardGeo) return;
-    t.cardGeo.dispose();
-    const shape = roundedRectShape(cardW * SCALE, cardD * SCALE, cardCornerRadius * SCALE);
-    t.cardGeo = buildExtrudedPieceGeometry(shape, { widthUnits: 1, depthUnits: 1, thicknessUnits: cardThickness * SCALE });
-    Object.values(t.cardInstancesTHREE || {}).forEach((rec) => {
-      rec.mesh.geometry = t.cardGeo;
-    });
-  }, [cardW, cardD, cardThickness, cardCornerRadius]);
-
-  // ---- rebuild each piece SHAPE DEF's own geometry when its kind/dims/corner fraction
-  // change. Reassigning that geometry to whichever piece instances currently reference
-  // it happens in the combined placement effect below (it reads t.pieceShapeGeos fresh
-  // every pass), not here — this effect only owns the geometry cache itself. ----
-  useEffect(() => {
-    const t = three.current;
-    if (!t.pieceShapeGeos) return;
-    const liveIds = new Set(pieceShapeDefs.map((d) => d.id));
-    Object.keys(t.pieceShapeGeos).forEach((key) => {
+    if (!t.componentGeos) return;
+    const liveIds = new Set(components.map((c) => c.id));
+    Object.keys(t.componentGeos).forEach((key) => {
       if (liveIds.has(Number(key))) return;
-      t.pieceShapeGeos[key].dispose();
-      delete t.pieceShapeGeos[key];
+      t.componentGeos[key].dispose();
+      delete t.componentGeos[key];
     });
-    pieceShapeDefs.forEach((def) => {
-      t.pieceShapeGeos[def.id]?.dispose();
-      // custom SVG shapes are re-parsed from the stored source text each time (cheap
-      // for icon-sized SVGs) rather than caching a parsed THREE.Shape in React state —
-      // keeps the shape def itself a plain, inspectable object.
-      let shape;
-      if (def.kind === "svg" && def.svgText) {
-        const parsed = parseSvgToUnitShapes(def.svgText);
-        shape = parsed ? parsed.shapes : buildPresetShape("roundedSquare", def.cornerFrac);
-      } else {
-        shape = buildPresetShape(def.kind, def.cornerFrac);
-      }
-      t.pieceShapeGeos[def.id] = buildExtrudedPieceGeometry(shape, {
-        widthUnits: def.w * SCALE,
-        depthUnits: def.d * SCALE,
-        thicknessUnits: def.thickness * SCALE,
-      });
+    components.forEach((component) => {
+      t.componentGeos[component.id]?.dispose();
+      t.componentGeos[component.id] = buildComponentGeometry(component, SCALE);
     });
-  }, [pieceShapeDefs]);
+  }, [components]);
 
   // ---- add/remove box/card/piece instances to match state, and place each one per its
   // own position/rotation/tilt/orientation/floatHeight/layer/groundSnap. Combined into
@@ -1222,12 +1118,11 @@ export default function PackageBoxMockup() {
     if (!t.allBoxesGroup) return;
 
     t.syncInstances?.(boxInstances.map((b) => b.id));
-    t.syncCardInstances?.(cardInstances.map((c) => c.id));
-    // pieces only have a mesh worth positioning once their shape def actually exists
-    // (a piece can be added before any shape def is defined, e.g. mid-edit) — those
-    // without a resolvable geometry are just left unsynced until a shape def is assigned.
-    const placeablePieces = pieceInstances.filter((p) => t.pieceShapeGeos[p.shapeDefId]);
-    t.syncPieceInstances?.(placeablePieces);
+    // component instances only have a mesh worth positioning once their component
+    // actually exists (an instance can be added before any component is defined, e.g.
+    // mid-edit) — those without a resolvable geometry are left unsynced until one is.
+    const placeableComponents = componentInstances.filter((c) => t.componentGeos[c.componentId]);
+    t.syncComponentInstances?.(placeableComponents);
 
     const reference = boxInstances[0];
     const stackItems = [];
@@ -1276,41 +1171,17 @@ export default function PackageBoxMockup() {
       });
     });
 
-    cardInstances.forEach((data) => {
-      const rec = t.cardInstancesTHREE[data.id];
+    placeableComponents.forEach((data) => {
+      const rec = t.componentInstancesTHREE[data.id];
       if (!rec) return;
+      rec.mesh.geometry = t.componentGeos[data.componentId];
       rec.group.quaternion.copy(composePlacementQuaternion(data));
       rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
       rec.group.updateMatrixWorld(true);
 
       const footprint = measureXZFootprint(rec.group);
       stackItems.push({
-        id: `card:${data.id}`,
-        layer: data.layer ?? 0,
-        groundSnap: data.groundSnap !== false,
-        ...footprint,
-        place: (floorY) => {
-          const y = data.groundSnap === false
-            ? data.floatHeight * SCALE
-            : groundSnapY(rec.group, data.floatHeight || 0, SCALE, { floorY });
-          rec.group.position.y = y;
-          rec.group.updateMatrixWorld(true);
-          return { y, topY: new THREE.Box3().setFromObject(rec.group).max.y };
-        },
-      });
-    });
-
-    placeablePieces.forEach((data) => {
-      const rec = t.pieceInstancesTHREE[data.id];
-      if (!rec) return;
-      rec.mesh.geometry = t.pieceShapeGeos[data.shapeDefId];
-      rec.group.quaternion.copy(composePlacementQuaternion({ ...data, orientation: "lying" }));
-      rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
-      rec.group.updateMatrixWorld(true);
-
-      const footprint = measureXZFootprint(rec.group);
-      stackItems.push({
-        id: `piece:${data.id}`,
+        id: `component:${data.id}`,
         layer: data.layer ?? 0,
         groundSnap: data.groundSnap !== false,
         ...footprint,
@@ -1335,15 +1206,13 @@ export default function PackageBoxMockup() {
     // there's more than one object total, since with just one it's obvious which one
     // the controls apply to.
     if (t.selectionMarker) {
-      const totalObjects = boxInstances.length + cardInstances.length + placeablePieces.length;
+      const totalObjects = boxInstances.length + placeableComponents.length;
       const selGroup =
         activeSelection?.kind === "box"
           ? t.instances[activeSelection.id]?.boxGroup
-          : activeSelection?.kind === "card"
-            ? t.cardInstancesTHREE[activeSelection.id]?.group
-            : activeSelection?.kind === "piece"
-              ? t.pieceInstancesTHREE[activeSelection.id]?.group
-              : null;
+          : activeSelection?.kind === "component"
+            ? t.componentInstancesTHREE[activeSelection.id]?.group
+            : null;
       if (selGroup && totalObjects > 1) {
         const selBox = new THREE.Box3().setFromObject(selGroup);
         const selSize = new THREE.Vector3();
@@ -1366,46 +1235,42 @@ export default function PackageBoxMockup() {
     clearance,
     bevelRadius,
     activeSelection,
-    cardInstances,
-    cardW,
-    cardD,
-    cardThickness,
-    cardCornerRadius,
-    pieceInstances,
-    pieceShapeDefs,
+    componentInstances,
+    components,
   ]);
 
-  // ---- rebuild each card instance's OWN materials (top face = its symbol's image,
-  // cover-fit via UV repeat/offset so it never distorts; bottom+side = the symbol's
-  // tint color) whenever that instance's symbol assignment, the symbol library's
-  // contents, or the card's face aspect ratio changes. Keyed off a derived "which
-  // instance points at which symbol" string rather than the raw cardInstances array so
-  // dragging a card's position doesn't re-bake every texture on every frame. ----
-  const cardSymbolAssignmentKey = cardInstances.map((c) => `${c.id}:${c.symbolId ?? ""}`).join("|");
+  // ---- rebuild each component instance's OWN materials (top face = its component's
+  // image, cover-fit via UV repeat/offset so it never distorts; bottom+side = the
+  // component's tint color) whenever that instance's component assignment or the component
+  // library's contents change. Keyed off a derived "which instance points at which
+  // component" string rather than the raw componentInstances array so dragging an
+  // instance's position doesn't re-bake every texture on every frame. ----
+  const componentAssignmentKey = componentInstances.map((c) => `${c.id}:${c.componentId ?? ""}`).join("|");
   useEffect(() => {
     const t = three.current;
-    if (!t.cardInstancesTHREE) return;
-    const faceAspect = cardW / cardD;
-    cardInstances.forEach((inst) => {
-      const rec = t.cardInstancesTHREE[inst.id];
+    if (!t.componentInstancesTHREE) return;
+    const componentById = new Map(components.map((c) => [c.id, c]));
+    componentInstances.forEach((inst) => {
+      const rec = t.componentInstancesTHREE[inst.id];
       if (!rec) return;
-      const symbol = symbols.find((s) => s.id === inst.symbolId) || null;
-      const canvas = buildSymbolFaceCanvas(symbol);
+      const component = componentById.get(inst.componentId) || null;
+      const faceAspect = component ? component.w / component.d : 1;
+      const canvas = buildComponentFaceCanvas(component);
       const tex = new THREE.CanvasTexture(canvas);
       tex.encoding = THREE.sRGBEncoding;
-      const texAspect = symbol?.img ? symbolAspect(symbol) : 1;
+      const texAspect = component?.img ? componentAspect(component) : 1;
       const { repeat, offset } = coverFitRepeatOffset(texAspect, faceAspect);
       tex.repeat.set(repeat[0], repeat[1]);
       tex.offset.set(offset[0], offset[1]);
       tex.needsUpdate = true;
 
-      const bodyColor = new THREE.Color(symbol?.color || DEFAULT_SYMBOL_COLOR);
+      const bodyColor = new THREE.Color(component?.color || DEFAULT_COMPONENT_COLOR);
       rec.mats.forEach((m, i) => {
         if (m.map) m.map.dispose();
         if (i === 1) {
           // top cap (index 1 — see splitCapGroups in shapes2d.js: 0=bottom,1=top,
           // 2=side) — faces up when lying flat, faces the camera once "standing"
-          // rotates the whole card, same as the box's lid/top face convention.
+          // rotates the whole component, same as the box's lid/top face convention.
           m.map = tex;
           m.color.set(0xffffff);
         } else {
@@ -1416,47 +1281,7 @@ export default function PackageBoxMockup() {
       });
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [cardSymbolAssignmentKey, symbols, cardW, cardD]);
-
-  // ---- same idea as the card texture effect above, but for pieces: the symbol's image
-  // goes on the TOP cap only (materialIndex 1 — see splitCapGroups in shapes2d.js), the
-  // bottom cap + sides (materialIndex 0/2) get the symbol's plain tint color. Cover-fit
-  // aspect comes from the piece's OWN shape def (W/D), not the card's. ----
-  const pieceSymbolAssignmentKey = pieceInstances.map((p) => `${p.id}:${p.shapeDefId ?? ""}:${p.symbolId ?? ""}`).join("|");
-  useEffect(() => {
-    const t = three.current;
-    if (!t.pieceInstancesTHREE) return;
-    const shapeDefById = new Map(pieceShapeDefs.map((d) => [d.id, d]));
-    pieceInstances.forEach((inst) => {
-      const rec = t.pieceInstancesTHREE[inst.id];
-      if (!rec) return;
-      const def = shapeDefById.get(inst.shapeDefId);
-      const faceAspect = def ? def.w / def.d : 1;
-      const symbol = symbols.find((s) => s.id === inst.symbolId) || null;
-      const canvas = buildSymbolFaceCanvas(symbol);
-      const tex = new THREE.CanvasTexture(canvas);
-      tex.encoding = THREE.sRGBEncoding;
-      const texAspect = symbol?.img ? symbolAspect(symbol) : 1;
-      const { repeat, offset } = coverFitRepeatOffset(texAspect, faceAspect);
-      tex.repeat.set(repeat[0], repeat[1]);
-      tex.offset.set(offset[0], offset[1]);
-      tex.needsUpdate = true;
-
-      const bodyColor = new THREE.Color(symbol?.color || DEFAULT_SYMBOL_COLOR);
-      rec.mats.forEach((m, i) => {
-        if (m.map) m.map.dispose();
-        if (i === 1) {
-          m.map = tex;
-          m.color.set(0xffffff);
-        } else {
-          m.map = null;
-          m.color.copy(bodyColor);
-        }
-        m.needsUpdate = true;
-      });
-    });
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [pieceSymbolAssignmentKey, symbols, pieceShapeDefs]);
+  }, [componentAssignmentKey, components]);
 
   // ---- ground visibility ----
   useEffect(() => {
@@ -2038,102 +1863,53 @@ export default function PackageBoxMockup() {
     if (activeSelection.kind === "box" && activeSelection.id === id) selectObject("box", remaining[0].id);
   };
 
-  // ---- symbol library management ----
-  const addSymbol = () => {
-    const id = nextSymbolIdRef.current++;
-    const num = nextSymbolNumRef.current++;
-    setSymbols((prev) => [...prev, createSymbol({ id, name: `シンボル ${num}` })]);
+  // ---- component library management ----
+  const addComponent = (presetKey = "card") => {
+    const id = nextComponentIdRef.current++;
+    const num = nextComponentNumRef.current++;
+    setComponents((prev) => [...prev, createComponent({ id, name: `コンポーネント ${num}`, presetKey })]);
+    return id;
   };
-  const updateSymbol = (id, patch) => {
-    setSymbols((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  const updateComponent = (id, patch) => {
+    setComponents((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   };
-  const renameSymbol = (id, name) => updateSymbol(id, { name });
-  const setSymbolColor = (id, color) => updateSymbol(id, { color });
-  const removeSymbol = (id) => setSymbols((prev) => prev.filter((s) => s.id !== id));
-  const uploadSymbolImage = (id, e) => {
+  const renameComponent = (id, name) => updateComponent(id, { name });
+  const setComponentColor = (id, color) => updateComponent(id, { color });
+  const removeComponent = (id) => setComponents((prev) => prev.filter((c) => c.id !== id));
+  const uploadComponentImage = (id, e) => {
     const file = e.target.files?.[0];
     if (!file) return;
     const reader = new FileReader();
     reader.onload = (ev) => {
       const img = new Image();
       img.onload = () =>
-        updateSymbol(id, { img, fileName: file.name, transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } });
+        updateComponent(id, { img, fileName: file.name, transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } });
       img.src = ev.target.result;
     };
     reader.readAsDataURL(file);
   };
-  const pasteSymbolImage = (id) =>
+  const pasteComponentImage = (id) =>
     makePasteHandler((img) =>
-      updateSymbol(id, { img, fileName: "(クリップボードから貼り付け)", transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } })
+      updateComponent(id, { img, fileName: "(クリップボードから貼り付け)", transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } })
     )();
-  const openSymbolCropEditor = (id) => {
-    const symbol = symbols.find((s) => s.id === id);
-    if (!symbol?.img) return;
+  const openComponentCropEditor = (id) => {
+    const component = components.find((c) => c.id === id);
+    if (!component?.img) return;
     setCropEditor({
-      img: symbol.img,
-      aspectW: imgW(symbol.img),
-      aspectH: imgH(symbol.img),
+      img: component.img,
+      aspectW: imgW(component.img),
+      aspectH: imgH(component.img),
       regions: null,
-      initialCrop: symbol.transform,
+      initialCrop: component.transform,
       setTransform: (updater) =>
-        setSymbols((prev) => prev.map((s) => (s.id === id ? { ...s, transform: updater(s.transform) } : s))),
+        setComponents((prev) => prev.map((c) => (c.id === id ? { ...c, transform: updater(c.transform) } : c))),
     });
   };
-  // detects the corner radius baked into an already-rounded PNG's alpha channel and
-  // converts it from source pixels to mm using the symbol's own crop + the card's
-  // current width, then applies it as the shared card corner radius.
-  const autoDetectCornerRadiusFromSymbol = (id) => {
-    const symbol = symbols.find((s) => s.id === id);
-    if (!symbol?.img) return;
-    const cropped = cropToCanvas(symbol.img, symbol.transform);
-    const radiusPx = detectAlphaCornerRadiusPx(cropped);
-    if (!radiusPx) {
-      alert("この画像から角丸を検出できませんでした(透明な角が見つかりません)。");
-      return;
-    }
-    const mmPerPx = cardW / cropped.width;
-    setCardCornerRadius(Math.max(0, Math.round(radiusPx * mmPerPx * 10) / 10));
-  };
-
-  // ---- card instance management ----
-  const addCardInstance = () => {
-    const id = nextCardIdRef.current++;
-    const spacing = cardW + 20;
-    setCardInstances((prev) => [...prev, { id, ...DEFAULT_CARD_INSTANCE, x: prev.length * spacing }]);
-    selectObject("card", id);
-  };
-  const duplicateCardInstance = (sourceId) => {
-    const source = cardInstances.find((c) => c.id === sourceId);
-    if (!source) return;
-    const id = nextCardIdRef.current++;
-    const spacing = cardW + 20;
-    setCardInstances((prev) => [...prev, { ...source, id, x: source.x + spacing }]);
-    selectObject("card", id);
-  };
-  const removeCardInstance = (id) => {
-    setCardInstances((prev) => {
-      const remaining = prev.filter((c) => c.id !== id);
-      if (selectedCardId === id) setSelectedCardId(remaining[0]?.id ?? null);
-      return remaining;
-    });
-    if (activeSelection.kind === "card" && activeSelection.id === id) selectObject("box", boxInstances[0].id);
-  };
-  const updateCardInstance = (id, patch) => {
-    setCardInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
-  };
-
-  // ---- piece shape library management ----
-  const addPieceShapeDef = () => {
-    const id = nextPieceShapeIdRef.current++;
-    const num = nextPieceShapeNumRef.current++;
-    setPieceShapeDefs((prev) => [...prev, { id, name: `形状 ${num}`, ...DEFAULT_PIECE_SHAPE_DEF }]);
-    return id;
-  };
-  // imports an uploaded SVG's outline as a new custom shape def — pushed to shape,
-  // extruded exactly like a preset (see parseSvgToUnitShapes/buildExtrudedPieceGeometry
-  // in shapes2d.js). Defaults the new def's W/D to the SVG's own aspect ratio (at a
-  // fixed 30mm long edge) so it isn't squished on first use.
-  const addPieceShapeDefFromSvg = (file) => {
+  // imports an uploaded SVG's outline as this component's shape — extruded exactly
+  // like a preset (see parseSvgToUnitShapes/buildComponentGeometry in shapes2d.js).
+  // Resizes the component to the SVG's own aspect ratio (at a fixed 30mm long edge) so
+  // it isn't squished on first use.
+  const setComponentSvgShape = (id, file) => {
     const reader = new FileReader();
     reader.onload = (ev) => {
       const svgText = ev.target.result;
@@ -2142,68 +1918,79 @@ export default function PackageBoxMockup() {
         alert("このSVGから形状を読み取れませんでした。");
         return;
       }
-      const id = nextPieceShapeIdRef.current++;
-      const num = nextPieceShapeNumRef.current++;
       const longEdge = 30;
       const w = parsed.aspect >= 1 ? longEdge : longEdge * parsed.aspect;
       const d = parsed.aspect >= 1 ? longEdge / parsed.aspect : longEdge;
-      setPieceShapeDefs((prev) => [
-        ...prev,
-        { id, name: `形状 ${num}(SVG)`, kind: "svg", svgText, w, d, thickness: DEFAULT_PIECE_SHAPE_DEF.thickness, cornerFrac: 0 },
-      ]);
+      updateComponent(id, { kind: "svg", svgText, w, d });
     };
     reader.readAsText(file);
   };
-  const updatePieceShapeDef = (id, patch) => {
-    setPieceShapeDefs((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  // best-guess shape (circle vs. rounded-rect) + corner-radius detection from an
+  // uploaded PNG's alpha channel — see detectAlphaShapeKind/detectAlphaCornerRadiusPx
+  // in imaging.js for what this can and can't reliably tell apart.
+  const autoDetectShapeFromComponent = (id) => {
+    const component = components.find((c) => c.id === id);
+    if (!component?.img) return;
+    const cropped = cropToCanvas(component.img, component.transform);
+    const kind = detectAlphaShapeKind(cropped);
+    if (!kind) {
+      alert("この画像から形状を検出できませんでした(透明な部分が見つかりません)。");
+      return;
+    }
+    if (kind === "circle") {
+      updateComponent(id, { kind: "circle" });
+      return;
+    }
+    const radiusPx = detectAlphaCornerRadiusPx(cropped);
+    const mmPerPx = component.w / cropped.width;
+    updateComponent(id, { kind: "roundedSquare", cornerRadius: Math.max(0, Math.round(radiusPx * mmPerPx * 10) / 10) });
   };
-  const removePieceShapeDef = (id) => setPieceShapeDefs((prev) => prev.filter((d) => d.id !== id));
 
-  // ---- piece instance management ----
-  const addPieceInstance = () => {
-    const id = nextPieceIdRef.current++;
-    // pieces need a shape def to have any geometry — auto-create one on first use so
-    // the user isn't forced to visit the shape library before placing anything.
-    const shapeDefId = pieceShapeDefs[0]?.id ?? addPieceShapeDef();
-    const spacing = 40;
-    setPieceInstances((prev) => [...prev, { id, ...DEFAULT_PIECE_INSTANCE, shapeDefId, x: prev.length * spacing }]);
-    selectObject("piece", id);
+  // ---- component instance management ----
+  const addComponentInstance = (componentId) => {
+    const id = nextComponentInstanceIdRef.current++;
+    // an instance needs SOME component to show anything — auto-create a card-preset
+    // one on first use so the user isn't forced to visit the library before placing.
+    const resolvedComponentId = componentId ?? components[0]?.id ?? addComponent("card");
+    const spacing = 60;
+    setComponentInstances((prev) => [
+      ...prev,
+      { id, ...DEFAULT_COMPONENT_INSTANCE, componentId: resolvedComponentId, x: prev.length * spacing },
+    ]);
+    selectObject("component", id);
   };
-  const duplicatePieceInstance = (sourceId) => {
-    const source = pieceInstances.find((p) => p.id === sourceId);
+  const duplicateComponentInstance = (sourceId) => {
+    const source = componentInstances.find((c) => c.id === sourceId);
     if (!source) return;
-    const id = nextPieceIdRef.current++;
-    setPieceInstances((prev) => [...prev, { ...source, id, x: source.x + 40 }]);
-    selectObject("piece", id);
+    const id = nextComponentInstanceIdRef.current++;
+    setComponentInstances((prev) => [...prev, { ...source, id, x: source.x + 40 }]);
+    selectObject("component", id);
   };
-  const removePieceInstance = (id) => {
-    setPieceInstances((prev) => {
-      const remaining = prev.filter((p) => p.id !== id);
-      if (selectedPieceId === id) setSelectedPieceId(remaining[0]?.id ?? null);
+  const removeComponentInstance = (id) => {
+    setComponentInstances((prev) => {
+      const remaining = prev.filter((c) => c.id !== id);
+      if (selectedComponentInstanceId === id) setSelectedComponentInstanceId(remaining[0]?.id ?? null);
       return remaining;
     });
-    if (activeSelection.kind === "piece" && activeSelection.id === id) selectObject("box", boxInstances[0].id);
+    if (activeSelection.kind === "component" && activeSelection.id === id) selectObject("box", boxInstances[0].id);
+  };
+  const updateComponentInstance = (id, patch) => {
+    setComponentInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   };
 
   // ---- unified dispatch used by the Outliner (single add/duplicate/remove UI
-  // covering all three kinds instead of each kind having its own copy) ----
+  // covering both kinds instead of each kind having its own copy) ----
   const addInstance = (kind) => {
     if (kind === "box") addBoxInstance();
-    else if (kind === "card") addCardInstance();
-    else if (kind === "piece") addPieceInstance();
+    else if (kind === "component") addComponentInstance();
   };
   const duplicateInstance = (kind, id) => {
     if (kind === "box") duplicateBoxInstance();
-    else if (kind === "card") duplicateCardInstance(id);
-    else if (kind === "piece") duplicatePieceInstance(id);
+    else if (kind === "component") duplicateComponentInstance(id);
   };
   const removeInstance = (kind, id) => {
     if (kind === "box") removeBoxInstance(id);
-    else if (kind === "card") removeCardInstance(id);
-    else if (kind === "piece") removePieceInstance(id);
-  };
-  const updatePieceInstance = (id, patch) => {
-    setPieceInstances((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+    else if (kind === "component") removeComponentInstance(id);
   };
 
   // small "連動" (linked) badge-button shown next to a per-instance control's label —
@@ -2314,8 +2101,7 @@ export default function PackageBoxMockup() {
       >
         <Outliner
           boxInstances={boxInstances}
-          cardInstances={cardInstances}
-          pieceInstances={pieceInstances}
+          componentInstances={componentInstances}
           activeSelection={activeSelection}
           onSelect={selectObject}
           onAdd={addInstance}
@@ -2476,30 +2262,13 @@ export default function PackageBoxMockup() {
         </>
         )}
 
-        {activeSelection.kind === "card" && (
-        <CardPanel
-          cardW={cardW}
-          setCardW={setCardW}
-          cardD={cardD}
-          setCardD={setCardD}
-          cardThickness={cardThickness}
-          setCardThickness={setCardThickness}
-          cardCornerRadius={cardCornerRadius}
-          setCardCornerRadius={setCardCornerRadius}
-          symbols={symbols}
-          cardInstances={cardInstances}
-          selectedCardId={selectedCardId}
-          onUpdate={updateCardInstance}
-        />
-        )}
-
-        {activeSelection.kind === "piece" && (
-        <PiecePanel
-          shapeDefs={pieceShapeDefs}
-          symbols={symbols}
-          pieceInstances={pieceInstances}
-          selectedPieceId={selectedPieceId}
-          onUpdate={updatePieceInstance}
+        {activeSelection.kind === "component" && (
+        <ComponentInstancePanel
+          components={components}
+          componentInstances={componentInstances}
+          selectedInstanceId={selectedComponentInstanceId}
+          onUpdate={updateComponentInstance}
+          onOpenComponentLibrary={() => setBottomBarCollapsed(false)}
         />
         )}
 
@@ -2916,24 +2685,18 @@ export default function PackageBoxMockup() {
           </div>
         </div>
 
-        <SymbolLibraryPanel
-          symbols={symbols}
-          onAddSymbol={addSymbol}
-          onRenameSymbol={renameSymbol}
-          onSetColor={setSymbolColor}
-          onUploadImage={uploadSymbolImage}
-          onPasteImage={pasteSymbolImage}
-          onOpenCropEditor={openSymbolCropEditor}
-          onRemoveSymbol={removeSymbol}
-          onAutoRoundFromAlpha={autoDetectCornerRadiusFromSymbol}
-        />
-
-        <PieceShapeLibraryPanel
-          shapeDefs={pieceShapeDefs}
-          onAdd={addPieceShapeDef}
-          onAddFromSvg={addPieceShapeDefFromSvg}
-          onUpdate={updatePieceShapeDef}
-          onRemove={removePieceShapeDef}
+        <ComponentLibraryPanel
+          components={components}
+          onAddComponent={addComponent}
+          onRename={renameComponent}
+          onSetColor={setComponentColor}
+          onUploadImage={uploadComponentImage}
+          onPasteImage={pasteComponentImage}
+          onOpenCropEditor={openComponentCropEditor}
+          onRemove={removeComponent}
+          onAutoDetectShape={autoDetectShapeFromComponent}
+          onUpdate={updateComponent}
+          onSetSvgShape={setComponentSvgShape}
         />
       </div>
       )}

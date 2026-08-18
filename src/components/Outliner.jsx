@@ -1,13 +1,9 @@
 import React, { useState } from "react";
 
-const TYPE_LABEL = { box: "箱", card: "カード", piece: "駒" };
+const TYPE_LABEL = { box: "箱", component: "コンポーネント" };
 const TYPE_DOT_STYLE = {
   box: { background: "#cbb98f", borderRadius: "2px" },
-  card: { background: "#5fd3d9", borderRadius: "1px" },
-  piece: {
-    background: "#f2a65a",
-    clipPath: "polygon(50% 0%, 61% 35%, 98% 35%, 68% 57%, 79% 91%, 50% 70%, 21% 91%, 32% 57%, 2% 35%, 39% 35%)",
-  },
+  component: { background: "#5fd3d9", borderRadius: "50%" },
 };
 
 // unified layers panel: box/card/piece used to each have their own independent
@@ -17,17 +13,18 @@ const TYPE_DOT_STYLE = {
 // convention as a typical layers panel) — so selecting/adding/removing/duplicating any
 // placed object works the same way regardless of its kind, and where something sits in
 // the stacking order (see the ground-snap/layer resolver) is visible at a glance.
+// Card/piece are no longer distinct kinds here — both are "component" instances now
+// (see lib/components.js); only box remains structurally separate.
 //
 // Fills its whole column (h-full) rather than capping its own list at a small fixed
 // height — it lives alone in a dedicated column now, so there's no reason to make it
 // scroll internally after ~6 rows while the rest of that column sits empty below it.
-export default function Outliner({ boxInstances, cardInstances, pieceInstances, activeSelection, onSelect, onAdd, onDuplicate, onRemove }) {
+export default function Outliner({ boxInstances, componentInstances, activeSelection, onSelect, onAdd, onDuplicate, onRemove }) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
 
   const rows = [
     ...boxInstances.map((b, i) => ({ kind: "box", id: b.id, name: `箱${i + 1}`, layer: b.layer ?? 0 })),
-    ...cardInstances.map((c, i) => ({ kind: "card", id: c.id, name: `カード${i + 1}`, layer: c.layer ?? 0 })),
-    ...pieceInstances.map((p, i) => ({ kind: "piece", id: p.id, name: `駒${i + 1}`, layer: p.layer ?? 0 })),
+    ...componentInstances.map((c, i) => ({ kind: "component", id: c.id, name: `コンポーネント${i + 1}`, layer: c.layer ?? 0 })),
   ].sort((a, b) => b.layer - a.layer);
 
   const canRemove = (kind) => kind !== "box" || boxInstances.length > 1;
@@ -61,7 +58,7 @@ export default function Outliner({ boxInstances, cardInstances, pieceInstances, 
               className="absolute right-0 top-full mt-1 rounded flex flex-col overflow-hidden z-10"
               style={{ background: "#1c1a17", border: "1px solid #3a372f", minWidth: "100px" }}
             >
-              {["box", "card", "piece"].map((kind) => (
+              {["box", "component"].map((kind) => (
                 <button
                   key={kind}
                   onClick={() => {

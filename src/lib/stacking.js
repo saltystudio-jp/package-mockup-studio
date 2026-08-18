@@ -28,14 +28,25 @@ export function resolveStacking(items) {
     const batch = [];
     while (i < byLayerAsc.length && byLayerAsc[i].layer === layer) batch.push(byLayerAsc[i++]);
 
-    batch.forEach((item) => {
+    // floorY for every item in this batch is computed against `resolved` as it stood
+    // BEFORE this batch started (strictly lower layers only) — items in the same
+    // batch don't get pushed to `resolved` until AFTER the whole batch's floorYs are
+    // computed, so same-layer objects never see each other here regardless of which
+    // order they happen to appear in (previously, an earlier same-layer item could
+    // already be in `resolved` by the time a later one in the same batch was checked,
+    // silently letting same-layer objects stack on each other).
+    const floorYs = batch.map((item) => {
       let floorY = 0;
       if (item.groundSnap) {
         resolved.forEach((r) => {
           if (overlaps(item, r)) floorY = Math.max(floorY, r.topY);
         });
       }
-      const { y, topY } = item.place(floorY);
+      return floorY;
+    });
+
+    batch.forEach((item, idx) => {
+      const { y, topY } = item.place(floorYs[idx]);
       results.set(item.id, y);
       resolved.push({ minX: item.minX, maxX: item.maxX, minZ: item.minZ, maxZ: item.maxZ, topY });
     });

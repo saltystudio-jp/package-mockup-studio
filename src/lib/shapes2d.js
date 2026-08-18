@@ -28,22 +28,6 @@ function unitCircleShape() {
   return shape;
 }
 
-function unitRoundedSquareShape(cornerFrac = 0.18) {
-  const s = 0.5;
-  const r = Math.max(0, Math.min(0.5, cornerFrac));
-  const shape = new THREE.Shape();
-  shape.moveTo(-s + r, -s);
-  shape.lineTo(s - r, -s);
-  shape.absarc(s - r, -s + r, r, -Math.PI / 2, 0, false);
-  shape.lineTo(s, s - r);
-  shape.absarc(s - r, s - r, r, 0, Math.PI / 2, false);
-  shape.lineTo(-s + r, s);
-  shape.absarc(-s + r, s - r, r, Math.PI / 2, Math.PI, false);
-  shape.lineTo(-s, -s + r);
-  shape.absarc(-s + r, -s + r, r, Math.PI, Math.PI * 1.5, false);
-  return shape;
-}
-
 // a rounded rectangle built at TRUE scale (real width/depth/radius, not a normalized
 // unit square scaled non-uniformly afterward) — for a card, whose width and depth
 // usually differ a lot (63x88mm), scaling a unit-square corner arc non-uniformly would
@@ -79,17 +63,19 @@ function unitPolygonShape(sides, rotation = 0) {
   return shape;
 }
 
-export function buildPresetShape(kind, cornerFrac) {
+// unit-space presets — everything EXCEPT roundedSquare, which needs true-scale
+// construction (see roundedRectShape above) instead of a unit shape + later
+// non-uniform scale, so its corner radius stays a real circular arc regardless of the
+// component's own width:depth ratio.
+export function buildPresetShape(kind) {
   switch (kind) {
-    case "circle":
-      return unitCircleShape();
     case "hexagon":
       return unitPolygonShape(6, Math.PI / 6);
     case "triangle":
       return unitPolygonShape(3, -Math.PI / 2);
-    case "roundedSquare":
+    case "circle":
     default:
-      return unitRoundedSquareShape(cornerFrac);
+      return unitCircleShape();
   }
 }
 
@@ -183,4 +169,27 @@ export function buildExtrudedPieceGeometry(shape, { widthUnits, depthUnits, thic
   split.scale(widthUnits, depthUnits, thicknessUnits);
   split.rotateX(-Math.PI / 2);
   return split;
+}
+
+// single entry point for building a component's geometry regardless of kind — picks
+// true-scale construction for roundedSquare (see roundedRectShape) vs. unit-shape +
+// scale for everything else (circle/hexagon/triangle/svg), so callers don't need to
+// know which shapes need which path. `component` is {kind, w, d, thickness,
+// cornerRadius, svgText} with w/d/thickness/cornerRadius in mm; `scale` converts mm to
+// three.js world units (matches the app-wide SCALE constant).
+export function buildComponentGeometry(component, scale) {
+  const w = component.w * scale;
+  const d = component.d * scale;
+  const thickness = Math.max(0.0001, component.thickness * scale);
+  if (component.kind === "roundedSquare") {
+    const shape = roundedRectShape(w, d, (component.cornerRadius || 0) * scale);
+    return buildExtrudedPieceGeometry(shape, { widthUnits: 1, depthUnits: 1, thicknessUnits: thickness });
+  }
+  if (component.kind === "svg" && component.svgText) {
+    const parsed = parseSvgToUnitShapes(component.svgText);
+    const shape = parsed ? parsed.shapes : buildPresetShape("circle");
+    return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
+  }
+  const shape = buildPresetShape(component.kind);
+  return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
 }
