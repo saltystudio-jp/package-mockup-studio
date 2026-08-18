@@ -832,6 +832,22 @@ export default function PackageBoxMockup() {
 
     const instancesRefByKind = { box: boxInstancesRef, card: cardInstancesRef, piece: pieceInstancesRef };
     const setInstancesByKind = { box: setBoxInstances, card: setCardInstances, piece: setPieceInstances };
+    const groupByKind = {
+      box: (id) => t.instances[id]?.boxGroup,
+      card: (id) => t.cardInstancesTHREE[id]?.group,
+      piece: (id) => t.pieceInstancesTHREE[id]?.group,
+    };
+    // projects a world position to viewport pixel coordinates — used to find where an
+    // object's own center sits on screen, so right-drag-to-rotate can measure the angle
+    // AROUND that point (like turning a dial) instead of just horizontal pixel distance.
+    const projectToScreen = (worldPos) => {
+      const ndc = worldPos.clone().project(camera);
+      const rect = renderer.domElement.getBoundingClientRect();
+      return {
+        x: rect.left + (ndc.x * 0.5 + 0.5) * rect.width,
+        y: rect.top + (1 - (ndc.y * 0.5 + 0.5)) * rect.height,
+      };
+    };
 
     const onPointerDown = (e) => {
       if (spacePressedRef.current) return; // space+drag pans the artboard instead — see the viewport-level handler
@@ -851,11 +867,17 @@ export default function PackageBoxMockup() {
           selectObject(hit.kind, hit.id);
           const current = instancesRefByKind[hit.kind].current.find((o) => o.id === hit.id);
           if (e.button === 2) {
-            // right-drag rotates around world-up (Y) — suppress the native context
+            // right-drag rotates around world-up (Y), measured as the angle swept
+            // around the object's own on-screen center — suppress the native context
             // menu that would otherwise pop up on release; see onContextMenu below.
             t.suppressNextContextMenu = true;
-            if (current) {
-              t.objectDrag = { mode: "rotate", kind: hit.kind, id: hit.id, startX: e.clientX, startRotY: current.rotY || 0, moved: false };
+            const group = groupByKind[hit.kind](hit.id);
+            if (current && group) {
+              const worldPos = new THREE.Vector3();
+              group.getWorldPosition(worldPos);
+              const centerScreen = projectToScreen(worldPos);
+              const startAngle = Math.atan2(e.clientY - centerScreen.y, e.clientX - centerScreen.x);
+              t.objectDrag = { mode: "rotate", kind: hit.kind, id: hit.id, centerScreen, startAngle, startRotY: current.rotY || 0, moved: false };
             }
           } else {
             const startGround = groundPointAt(e.clientX, e.clientY);
@@ -898,10 +920,11 @@ export default function PackageBoxMockup() {
 
       if (t.objectDrag?.mode === "rotate") {
         const d = t.objectDrag;
-        const totalDx = e.clientX - d.startX;
-        if (!d.moved && Math.abs(totalDx) > 2) d.moved = true;
+        const currentAngle = Math.atan2(e.clientY - d.centerScreen.y, e.clientX - d.centerScreen.x);
+        const deltaDeg = ((currentAngle - d.startAngle) * 180) / Math.PI;
+        if (!d.moved && Math.abs(deltaDeg) > 2) d.moved = true;
         if (!d.moved) return;
-        const nextRotY = ((d.startRotY + totalDx * 0.5) % 360 + 360) % 360;
+        const nextRotY = ((d.startRotY + deltaDeg) % 360 + 360) % 360;
         setInstancesByKind[d.kind]((prev) => prev.map((o) => (o.id === d.id ? { ...o, rotY: nextRotY } : o)));
         return;
       }
