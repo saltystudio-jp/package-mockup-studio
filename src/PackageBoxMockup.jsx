@@ -505,7 +505,6 @@ export default function PackageBoxMockup() {
   const spacePressedRef = useRef(false);
   const artboardPanRef = useRef(null);
   const artboardFittedRef = useRef(false);
-  const neededCameraDistRef = useRef(0);
 
   const three = useRef({
     scene: null,
@@ -654,11 +653,11 @@ export default function PackageBoxMockup() {
         const body = new THREE.Mesh(t.bodyGeo, t.bodyMats);
         body.castShadow = true;
         body.receiveShadow = true;
-        body.userData.instanceId = id;
+        body.userData = { kind: "box", instanceId: id };
         const lid = new THREE.Mesh(t.lidGeo, t.lidMats);
         lid.castShadow = true;
         lid.receiveShadow = true;
-        lid.userData.instanceId = id;
+        lid.userData = { kind: "box", instanceId: id };
         const boxGroup = new THREE.Group();
         boxGroup.add(body, lid);
         allBoxesGroup.add(boxGroup);
@@ -758,6 +757,31 @@ export default function PackageBoxMockup() {
     t.allPiecesGroup = allPiecesGroup;
     t.pieceShapeGeos = pieceShapeGeos;
     t.pieceInstancesTHREE = pieceInstancesTHREE;
+
+    // recomputes the orbit center, shadow frustum, and (if needed) nudges the orbit
+    // radius out so everything still fits — single source of truth called both from
+    // the placement effect (on normal state changes) and directly from onPointerUp
+    // right when an object-drag ends (see t.objectDrag below). Deliberately NEVER
+    // called WHILE a drag is in progress: recentering the camera mid-drag would move
+    // the same camera the drag's own ground-plane raycast reads from, so the object
+    // would appear to leap by more than the mouse actually moved — worse, since the
+    // leap itself grows the bounding box, that's a runaway feedback loop, not just a
+    // one-time jump.
+    t.recomputeFraming = () => {
+      const fullBox = new THREE.Box3().setFromObject(allBoxesGroup);
+      if (allCardsGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allCardsGroup));
+      if (allPiecesGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allPiecesGroup));
+      t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
+      t.fullBox = fullBox;
+      fitShadowToBox(t);
+      if (t.shadowRadius && t.camera) {
+        const halfV = (t.camera.fov * Math.PI) / 360;
+        const halfH = Math.atan(Math.tan(halfV) * t.camera.aspect);
+        const neededDist = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
+        if (neededDist > (t.neededCameraDist || 0)) t.radius = Math.max(t.radius, neededDist);
+        t.neededCameraDist = neededDist;
+      }
+    };
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -865,7 +889,10 @@ export default function PackageBoxMockup() {
       t.canvasPointerActive = false;
       t.dragging = false;
       t.panning = false;
-      t.objectDrag = null;
+      if (t.objectDrag) {
+        t.objectDrag = null;
+        t.recomputeFraming?.();
+      }
     };
     const onWheel = (e) => {
       if (e.ctrlKey || e.metaKey) return; // ctrl/cmd+wheel zooms the artboard instead — see the viewport-level handler
@@ -1202,12 +1229,9 @@ export default function PackageBoxMockup() {
 
     resolveStacking(stackItems);
 
-    const fullBox = new THREE.Box3().setFromObject(t.allBoxesGroup);
-    if (t.allCardsGroup && cardInstances.length) fullBox.union(new THREE.Box3().setFromObject(t.allCardsGroup));
-    if (t.allPiecesGroup && placeablePieces.length) fullBox.union(new THREE.Box3().setFromObject(t.allPiecesGroup));
-    t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
-    t.fullBox = fullBox;
-    fitShadowToBox(t);
+    // skipped while a drag is live — see t.recomputeFraming's own comment for why
+    // recentering the camera mid-drag would fight the drag itself.
+    if (!t.objectDrag) t.recomputeFraming?.();
 
     // ring under whichever object is the active selection (any kind) — only shown once
     // there's more than one object total, since with just one it's obvious which one
@@ -1335,38 +1359,6 @@ export default function PackageBoxMockup() {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [pieceSymbolAssignmentKey, symbols, pieceShapeDefs]);
-
-  // ---- when a box/card is added OR moved further out, nudge the orbit camera out if
-  // needed so the arrangement still fits in view — never nudges IN, so it never fights a
-  // manual zoom the user made. t.shadowRadius is recomputed from the combined box+card
-  // bounding box (see fitShadowToBox/t.fullBox above), so this single nudge covers both
-  // kinds.
-  //
-  // Depends on the full boxInstances/cardInstances arrays (not just their .length) —
-  // moving an existing card further from the box needs more room just as much as adding
-  // a new one does, and only a reference-identity change on the whole array (which a
-  // position edit also produces, same as the placement effect's own dependency below)
-  // reliably signals that.
-  //
-  // Distance is derived from actual trig (bounding-sphere-fits-in-frustum) compared
-  // against the LARGEST distance we've ever required (neededCameraDistRef) instead of a
-  // flat "shadowRadius * 1.7" multiplier — that flat multiplier (the original box-only
-  // version of this heuristic) undershoots once a small, far-off object makes the
-  // required distance much larger relative to shadowRadius than a same-sized-boxes-
-  // clustered-together arrangement would. ----
-  useEffect(() => {
-    const t = three.current;
-    if (t.shadowRadius && t.camera) {
-      const halfV = (t.camera.fov * Math.PI) / 360;
-      const halfH = Math.atan(Math.tan(halfV) * t.camera.aspect);
-      const neededDist = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
-      if (neededDist > neededCameraDistRef.current) {
-        t.radius = Math.max(t.radius, neededDist);
-      }
-      neededCameraDistRef.current = neededDist;
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boxInstances, cardInstances, pieceInstances, pieceShapeDefs]);
 
   // ---- ground visibility ----
   useEffect(() => {
