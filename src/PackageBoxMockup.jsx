@@ -1,6 +1,18 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
+import CropEditorModal from "./components/CropEditorModal.jsx";
+import {
+  imgW,
+  imgH,
+  rotatedImageCanvas,
+  mirroredImageCanvas,
+  cropFractions,
+  applyColorCorrection,
+  trimTransparentCanvas,
+  hexToRgba,
+  makePasteHandler,
+} from "./lib/imaging.js";
 
 const ROUND_SEGMENTS = 4; // corner smoothness for RoundedBoxGeometry
 
@@ -75,97 +87,6 @@ function singleFaceLayout(key, w, h) {
   return { totalW: w, totalH: h, regions: [{ key, x: 0, y: 0, w, h, rotate: 0 }] };
 }
 
-// `transform` trims a crop rectangle off the uploaded image's own edges (in % of that
-// image's width/height); whatever remains is stretched to exactly cover this net's
-// mm-space (netTotalW x netTotalH), independently in X and Y — this is how real print
-// files (which include bleed, trim marks, and structural flaps beyond the usable net)
-// get reduced down to just the panels we need.
-function cropFractions(transform) {
-  const cropLeft = Math.min(90, Math.max(0, transform?.cropLeft || 0)) / 100;
-  const cropRight = Math.min(90, Math.max(0, transform?.cropRight || 0)) / 100;
-  const cropTop = Math.min(90, Math.max(0, transform?.cropTop || 0)) / 100;
-  const cropBottom = Math.min(90, Math.max(0, transform?.cropBottom || 0)) / 100;
-  return { cropLeft, cropRight, cropTop, cropBottom };
-}
-
-// works with either an <img> (naturalWidth/Height) or a <canvas> (width/height)
-function imgW(img) {
-  return img.naturalWidth ?? img.width;
-}
-function imgH(img) {
-  return img.naturalHeight ?? img.height;
-}
-
-// rotates a whole uploaded image by 0/90/180/270deg into a fresh canvas, for source
-// files that were exported sideways/upside-down relative to our net template.
-function rotatedImageCanvas(img, degrees) {
-  const w = imgW(img);
-  const h = imgH(img);
-  const swapped = degrees === 90 || degrees === 270;
-  const canvas = document.createElement("canvas");
-  canvas.width = swapped ? h : w;
-  canvas.height = swapped ? w : h;
-  const ctx = canvas.getContext("2d");
-  ctx.translate(canvas.width / 2, canvas.height / 2);
-  ctx.rotate((degrees * Math.PI) / 180);
-  ctx.drawImage(img, -w / 2, -h / 2);
-  return canvas;
-}
-
-function mirroredImageCanvas(img) {
-  const w = imgW(img);
-  const h = imgH(img);
-  const canvas = document.createElement("canvas");
-  canvas.width = w;
-  canvas.height = h;
-  const ctx = canvas.getContext("2d");
-  ctx.translate(w, 0);
-  ctx.scale(-1, 1);
-  ctx.drawImage(img, 0, 0);
-  return canvas;
-}
-
-// reads the first image found on the system clipboard as a Blob. Requires a user
-// gesture (called from a click handler) and, in most browsers, a secure context.
-async function readClipboardImage() {
-  if (!navigator.clipboard || !navigator.clipboard.read) {
-    throw new Error("このブラウザはクリップボードからの画像貼り付けに対応していません");
-  }
-  const items = await navigator.clipboard.read();
-  for (const item of items) {
-    const type = item.types.find((t) => t.startsWith("image/"));
-    if (type) return item.getType(type);
-  }
-  throw new Error("クリップボードに画像が見つかりませんでした");
-}
-
-function blobToImage(blob) {
-  return new Promise((resolve, reject) => {
-    const img = new Image();
-    const url = URL.createObjectURL(blob);
-    img.onload = () => {
-      URL.revokeObjectURL(url);
-      resolve(img);
-    };
-    img.onerror = reject;
-    img.src = url;
-  });
-}
-
-// wraps a paste-from-clipboard button's click handler: reads the clipboard, decodes
-// it to an <img>, and hands it to whichever state setter(s) the caller passes in.
-function makePasteHandler(onImage) {
-  return async () => {
-    try {
-      const blob = await readClipboardImage();
-      const img = await blobToImage(blob);
-      onImage(img);
-    } catch (err) {
-      alert(err?.message || "クリップボードからの貼り付けに失敗しました");
-    }
-  };
-}
-
 // applies each face's own baked-in rotate/flipH/flipV (see DEFAULT_FACE_TRANSFORMS)
 // directly to its already-sliced canvas.
 function applyFaceTransform(canvas, dt) {
@@ -182,23 +103,6 @@ function applyFaceTransform(canvas, dt) {
   ctx.rotate((rotate * Math.PI) / 180);
   ctx.scale(flipH ? -1 : 1, flipV ? -1 : 1);
   ctx.drawImage(canvas, -canvas.width / 2, -canvas.height / 2);
-  return out;
-}
-
-// counteracts printed artwork looking pale/washed-out once lit in the 3D scene —
-// baked directly into each face's pixels (via canvas filter) rather than relying on
-// scene lighting alone, so the correction is predictable regardless of exposure/ambient.
-function applyColorCorrection(canvas, cc) {
-  const saturation = cc?.saturation ?? 100;
-  const contrast = cc?.contrast ?? 100;
-  const brightness = cc?.brightness ?? 100;
-  if (saturation === 100 && contrast === 100 && brightness === 100) return canvas;
-  const out = document.createElement("canvas");
-  out.width = canvas.width;
-  out.height = canvas.height;
-  const ctx = out.getContext("2d");
-  ctx.filter = `saturate(${saturation}%) contrast(${contrast}%) brightness(${brightness}%)`;
-  ctx.drawImage(canvas, 0, 0);
   return out;
 }
 
@@ -302,43 +206,6 @@ function extractFaceCanvas(img, region, netTotalW, netTotalH, transform) {
   return canvas;
 }
 
-// crops a canvas down to the bounding box of its non-transparent pixels (plus a small
-// padding) — used for transparent-background exports so the downloaded PNG frames just
-// the box itself instead of the full render viewport.
-function trimTransparentCanvas(canvas, paddingFrac = 0.015) {
-  const { width, height } = canvas;
-  const ctx = canvas.getContext("2d");
-  const { data } = ctx.getImageData(0, 0, width, height);
-  let minX = width;
-  let minY = height;
-  let maxX = -1;
-  let maxY = -1;
-  for (let y = 0; y < height; y++) {
-    const rowStart = y * width * 4;
-    for (let x = 0; x < width; x++) {
-      if (data[rowStart + x * 4 + 3] > 0) {
-        if (x < minX) minX = x;
-        if (x > maxX) maxX = x;
-        if (y < minY) minY = y;
-        if (y > maxY) maxY = y;
-      }
-    }
-  }
-  if (maxX < minX || maxY < minY) return canvas; // nothing opaque — leave untouched
-  const padding = Math.round(Math.max(width, height) * paddingFrac);
-  minX = Math.max(0, minX - padding);
-  minY = Math.max(0, minY - padding);
-  maxX = Math.min(width - 1, maxX + padding);
-  maxY = Math.min(height - 1, maxY + padding);
-  const outW = maxX - minX + 1;
-  const outH = maxY - minY + 1;
-  const out = document.createElement("canvas");
-  out.width = outW;
-  out.height = outH;
-  out.getContext("2d").drawImage(canvas, minX, minY, outW, outH, 0, 0, outW, outH);
-  return out;
-}
-
 // crops (via texture repeat/offset, not resampling) a background image texture to
 // "cover" the current viewport aspect ratio, the same way CSS background-size:cover
 // would — otherwise Three.js just stretches scene.background textures to the raw
@@ -395,15 +262,6 @@ function fitShadowToBox(t) {
   cam.near = Math.max(0.05, dist - radius * 2);
   cam.far = dist + radius * 2;
   cam.updateProjectionMatrix();
-}
-
-function hexToRgba(hex, alpha) {
-  const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
-  if (!m) return `rgba(95,211,217,${alpha})`;
-  const r = parseInt(m[1], 16);
-  const g = parseInt(m[2], 16);
-  const b = parseInt(m[3], 16);
-  return `rgba(${r},${g},${b},${alpha})`;
 }
 
 function drawNetGuide(canvas, layoutLocal, img, transform, lineColor) {
@@ -482,279 +340,6 @@ function drawNetGuide(canvas, layoutLocal, img, transform, lineColor) {
   ctx.strokeStyle = "#3a5a78";
   ctx.lineWidth = 1 * s;
   ctx.strokeRect(0.5 * s, 0.5 * s, canvas.width - 1 * s, canvas.height - 1 * s);
-}
-
-const CROP_MAX_W = 640;
-const CROP_MAX_H = 480;
-const CROP_MAX_ZOOM = 5;
-
-// crop editor: shows the raw uploaded image (no hidden baseline rotate/mirror).
-// Zoom is a single uniform, aspect-preserving scale (center-anchored, like before) —
-// dispW/dispH depend ONLY on zoom, never on the crop percentages. Dragging, and the
-// four top/bottom/left/right slider+number fields, all just move imgPos (pan) at that
-// fixed zoom — so adjusting one edge shifts the window rather than stretching the
-// image; the opposite edge updates automatically since it's derived from the same
-// imgPos, not set independently.
-function CropEditorModal({ img, aspectW, aspectH, regions, initialCrop, guideColor, onGuideColorChange, onApply, onCancel }) {
-  let frameW = CROP_MAX_W;
-  let frameH = (CROP_MAX_W * aspectH) / aspectW;
-  if (frameH > CROP_MAX_H) {
-    frameH = CROP_MAX_H;
-    frameW = (CROP_MAX_H * aspectW) / aspectH;
-  }
-
-  const [displaySrc] = useState(() => (img.src ? img.src : img.toDataURL()));
-  const baseScale = Math.max(frameW / imgW(img), frameH / imgH(img));
-
-  // best-effort recovery of a starting zoom/position from previously-saved crop %s
-  // (picks whichever axis needed more zoom to fit; the other axis's saved value may
-  // not be hit exactly, since zoom is now always uniform across both axes)
-  const [zoom, setZoom] = useState(() => {
-    const l = (initialCrop?.cropLeft || 0) / 100;
-    const r = (initialCrop?.cropRight || 0) / 100;
-    const t = (initialCrop?.cropTop || 0) / 100;
-    const b = (initialCrop?.cropBottom || 0) / 100;
-    const zx = 1 - l - r > 0.001 ? 1 / (1 - l - r) : 1;
-    const zy = 1 - t - b > 0.001 ? 1 / (1 - t - b) : 1;
-    return Math.min(CROP_MAX_ZOOM, Math.max(1, zx, zy));
-  });
-  const [imgPos, setImgPos] = useState(() => {
-    const dispW0 = imgW(img) * baseScale * zoom;
-    const dispH0 = imgH(img) * baseScale * zoom;
-    const l = (initialCrop?.cropLeft || 0) / 100;
-    const t = (initialCrop?.cropTop || 0) / 100;
-    return {
-      x: Math.min(0, Math.max(frameW - dispW0, -l * dispW0)),
-      y: Math.min(0, Math.max(frameH - dispH0, -t * dispH0)),
-    };
-  });
-  const dragRef = useRef(null);
-  const strokeColor = guideColor || "#5fd3d9";
-
-  const dispW = imgW(img) * baseScale * zoom;
-  const dispH = imgH(img) * baseScale * zoom;
-
-  const clampPos = (pos, z) => {
-    const w = imgW(img) * baseScale * z;
-    const h = imgH(img) * baseScale * z;
-    return {
-      x: Math.min(0, Math.max(frameW - w, pos.x)),
-      y: Math.min(0, Math.max(frameH - h, pos.y)),
-    };
-  };
-
-  const handleZoom = (rawZoom) => {
-    const newZoom = Math.min(CROP_MAX_ZOOM, Math.max(1, rawZoom));
-    const cx = frameW / 2;
-    const cy = frameH / 2;
-    const fracX = (cx - imgPos.x) / dispW;
-    const fracY = (cy - imgPos.y) / dispH;
-    const newDispW = imgW(img) * baseScale * newZoom;
-    const newDispH = imgH(img) * baseScale * newZoom;
-    setImgPos(clampPos({ x: cx - fracX * newDispW, y: cy - fracY * newDispH }, newZoom));
-    setZoom(newZoom);
-  };
-
-  const onPointerDown = (e) => {
-    dragRef.current = { startX: e.clientX, startY: e.clientY, startPos: imgPos };
-    e.currentTarget.setPointerCapture(e.pointerId);
-  };
-  const onPointerMove = (e) => {
-    if (!dragRef.current) return;
-    const dx = e.clientX - dragRef.current.startX;
-    const dy = e.clientY - dragRef.current.startY;
-    setImgPos(clampPos({ x: dragRef.current.startPos.x + dx, y: dragRef.current.startPos.y + dy }, zoom));
-  };
-  const onPointerUp = () => {
-    dragRef.current = null;
-  };
-  const onWheelZoom = (e) => {
-    e.preventDefault();
-    handleZoom(zoom * (1 - e.deltaY * 0.001));
-  };
-
-  const clampPct = (v) => Math.max(0, Math.min(100, Number.isFinite(v) ? v : 0));
-  const cropLeft = clampPct((-imgPos.x / dispW) * 100);
-  const cropRight = clampPct(((dispW - (frameW - imgPos.x)) / dispW) * 100);
-  const cropTop = clampPct((-imgPos.y / dispH) * 100);
-  const cropBottom = clampPct(((dispH - (frameH - imgPos.y)) / dispH) * 100);
-
-  const setLeftPct = (v) => setImgPos((p) => clampPos({ ...p, x: (-clampPct(v) / 100) * dispW }, zoom));
-  const setRightPct = (v) => setImgPos((p) => clampPos({ ...p, x: frameW - dispW * (1 - clampPct(v) / 100) }, zoom));
-  const setTopPct = (v) => setImgPos((p) => clampPos({ ...p, y: (-clampPct(v) / 100) * dispH }, zoom));
-  const setBottomPct = (v) => setImgPos((p) => clampPos({ ...p, y: frameH - dispH * (1 - clampPct(v) / 100) }, zoom));
-
-  const apply = () => {
-    onApply({ cropLeft, cropRight, cropTop, cropBottom });
-  };
-
-  const sliderControl = (label, value, onChange, { min = 0, max = 90, step = 0.5, decimals = 1, unit = "%" } = {}) => (
-    <div className="flex items-center gap-2">
-      <span className="text-xs flex-shrink-0" style={{ color: "#a89f8f", width: "28px" }}>
-        {label}
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="flex-1"
-      />
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Math.round(value * 10 ** decimals) / 10 ** decimals}
-        onChange={(e) => onChange(Number(e.target.value))}
-        className="text-xs rounded px-1 py-0.5 flex-shrink-0"
-        style={{ width: "48px", background: "#12203a", color: "#efe6d4", border: "1px solid #3a5a78" }}
-      />
-      <span className="text-xs flex-shrink-0" style={{ color: "#7d7568", width: "14px" }}>
-        {unit}
-      </span>
-    </div>
-  );
-
-  return (
-    <div
-      className="fixed inset-0 flex items-center justify-center"
-      style={{ background: "rgba(0,0,0,0.75)", zIndex: 50 }}
-    >
-      <div
-        className="rounded-lg p-4"
-        style={{ background: "#1c1a17", border: "1px solid #3a372f", maxWidth: "92vw" }}
-      >
-        <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="text-sm font-semibold" style={{ color: "#efe6d4" }}>
-            トリミング編集
-          </div>
-          {onGuideColorChange && (
-            <label
-              className="flex items-center gap-1 text-xs flex-shrink-0"
-              style={{ color: "#a89f8f" }}
-            >
-              線の色
-              <input
-                type="color"
-                value={strokeColor}
-                onChange={(e) => onGuideColorChange(e.target.value)}
-                style={{ width: "28px", height: "22px", padding: 0, border: "1px solid #3a372f", background: "none", cursor: "pointer" }}
-              />
-            </label>
-          )}
-        </div>
-        <p className="text-xs mb-3" style={{ color: "#7d7568" }}>
-          ドラッグで位置調整 / ホイールかスライダーで拡大縮小。下のスライダー・数値でも調整できます。
-        </p>
-        <div
-          onPointerDown={onPointerDown}
-          onPointerMove={onPointerMove}
-          onPointerUp={onPointerUp}
-          onPointerLeave={onPointerUp}
-          onWheel={onWheelZoom}
-          style={{
-            width: frameW,
-            height: frameH,
-            position: "relative",
-            overflow: "hidden",
-            background: "#000",
-            cursor: "grab",
-            border: `1px solid ${strokeColor}`,
-            touchAction: "none",
-          }}
-        >
-          <img
-            src={displaySrc}
-            draggable={false}
-            alt="crop preview"
-            style={{
-              position: "absolute",
-              left: imgPos.x,
-              top: imgPos.y,
-              width: dispW,
-              height: dispH,
-              maxWidth: "none",
-              pointerEvents: "none",
-              userSelect: "none",
-            }}
-          />
-          {regions && (
-            <svg
-              width={frameW}
-              height={frameH}
-              style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
-            >
-              {regions.map((r) => {
-                const x = (r.x / aspectW) * frameW;
-                const y = (r.y / aspectH) * frameH;
-                const w = (r.w / aspectW) * frameW;
-                const h = (r.h / aspectH) * frameH;
-                return (
-                  <g key={r.key}>
-                    <rect
-                      x={x}
-                      y={y}
-                      width={w}
-                      height={h}
-                      fill={hexToRgba(strokeColor, 0.08)}
-                      stroke={strokeColor}
-                      strokeWidth={1.5}
-                      strokeDasharray="6 4"
-                    />
-                    <text
-                      x={x + w / 2}
-                      y={y + 14}
-                      fill="#eef6f6"
-                      fontSize={11}
-                      textAnchor="middle"
-                      fontFamily="Inter, sans-serif"
-                      style={{ textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}
-                    >
-                      {FACE_LABELS[r.key] || r.key}
-                    </text>
-                  </g>
-                );
-              })}
-            </svg>
-          )}
-        </div>
-        <div className="mt-3" style={{ width: Math.max(frameW, 320) }}>
-          {sliderControl("拡大", zoom, handleZoom, { min: 1, max: CROP_MAX_ZOOM, step: 0.01, decimals: 2, unit: "倍" })}
-        </div>
-        <div
-          className="text-xs uppercase mt-3 mb-1"
-          style={{ color: "#7d7568", letterSpacing: "0.05em", width: Math.max(frameW, 320) }}
-        >
-          位置調整
-        </div>
-        <div className="grid grid-cols-2 gap-x-4 gap-y-2" style={{ width: Math.max(frameW, 320) }}>
-          {sliderControl("上", cropTop, setTopPct)}
-          {sliderControl("下", cropBottom, setBottomPct)}
-          {sliderControl("左", cropLeft, setLeftPct)}
-          {sliderControl("右", cropRight, setRightPct)}
-        </div>
-        <div className="flex gap-2 mt-4">
-          <button
-            onClick={onCancel}
-            className="flex-1 text-sm rounded py-2"
-            style={{ background: "#3a372f", color: "#efe6d4" }}
-          >
-            キャンセル
-          </button>
-          <button
-            onClick={apply}
-            className="flex-1 text-sm rounded py-2"
-            style={{ background: "#e2432a", color: "#1c1a17", fontWeight: 600 }}
-          >
-            適用
-          </button>
-        </div>
-      </div>
-    </div>
-  );
 }
 
 export default function PackageBoxMockup() {
@@ -2770,6 +2355,7 @@ export default function PackageBoxMockup() {
           aspectW={cropEditor.aspectW}
           aspectH={cropEditor.aspectH}
           regions={cropEditor.regions}
+          regionLabel={(key) => FACE_LABELS[key] || key}
           initialCrop={cropEditor.initialCrop}
           guideColor={guideColor}
           onGuideColorChange={setGuideColor}
