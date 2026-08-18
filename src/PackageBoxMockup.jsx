@@ -254,18 +254,26 @@ function getEffectiveInstance(inst, reference) {
   return eff;
 }
 
+// tracks the CURRENT scene bounds for shadow-map coverage — deliberately independent
+// of t.center (the orbit camera's look-at point), which now only ever changes from
+// explicit user action (orbit/pan/zoom, or the "reset camera" button), never
+// automatically as objects move. The shadow frustum still needs to track the actual
+// content regardless of where the viewer's camera happens to be pointed, so it
+// computes its own target from the bounding box directly instead of borrowing t.center.
 function fitShadowToBox(t) {
   if (!t.key || !t.allBoxesGroup) return;
   const box = t.fullBox || new THREE.Box3().setFromObject(t.allBoxesGroup);
   const size = new THREE.Vector3();
   box.getSize(size);
+  const boxCenter = new THREE.Vector3();
+  box.getCenter(boxCenter);
   const radius = Math.max(0.3, Math.max(size.x, size.y, size.z) * 0.5 * Math.SQRT2 + 0.15);
   t.shadowRadius = radius;
 
-  t.key.target.position.copy(t.center);
+  t.key.target.position.copy(boxCenter);
   t.key.target.updateMatrixWorld();
 
-  const dist = Math.max(0.5, t.key.position.distanceTo(t.center));
+  const dist = Math.max(0.5, t.key.position.distanceTo(boxCenter));
   const cam = t.key.shadow.camera;
   cam.left = -radius;
   cam.right = radius;
@@ -758,28 +766,34 @@ export default function PackageBoxMockup() {
     t.pieceShapeGeos = pieceShapeGeos;
     t.pieceInstancesTHREE = pieceInstancesTHREE;
 
-    // recomputes the orbit center, shadow frustum, and (if needed) nudges the orbit
-    // radius out so everything still fits — single source of truth called both from
-    // the placement effect (on normal state changes) and directly from onPointerUp
-    // right when an object-drag ends (see t.objectDrag below). Deliberately NEVER
-    // called WHILE a drag is in progress: recentering the camera mid-drag would move
-    // the same camera the drag's own ground-plane raycast reads from, so the object
-    // would appear to leap by more than the mouse actually moved — worse, since the
-    // leap itself grows the bounding box, that's a runaway feedback loop, not just a
-    // one-time jump.
-    t.recomputeFraming = () => {
+    // keeps the shadow map's coverage tracking the current scene bounds. Always safe
+    // to call automatically (including live during a drag) since — unlike the orbit
+    // camera — it never moves anything the user is actually looking through; it only
+    // adjusts an invisible shadow-casting frustum.
+    t.updateShadowFit = () => {
       const fullBox = new THREE.Box3().setFromObject(allBoxesGroup);
       if (allCardsGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allCardsGroup));
       if (allPiecesGroup.children.length) fullBox.union(new THREE.Box3().setFromObject(allPiecesGroup));
-      t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
       t.fullBox = fullBox;
       fitShadowToBox(t);
+    };
+
+    // the ONLY thing allowed to move the orbit camera's look-at point or zoom — never
+    // automatic. Earlier this ran on every object add/move (nudging radius/recentering
+    // on every change), which felt like the view drifting on its own even when the
+    // user hadn't touched the camera; now it's exclusively wired to an explicit
+    // "reset camera" button (see the viewport UI) so the camera only ever moves when
+    // asked to.
+    t.resetCameraView = () => {
+      t.updateShadowFit();
+      const fullBox = t.fullBox;
+      if (!fullBox || fullBox.isEmpty()) return;
+      t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
+      t.pan.set(0, 0, 0);
       if (t.shadowRadius && t.camera) {
         const halfV = (t.camera.fov * Math.PI) / 360;
         const halfH = Math.atan(Math.tan(halfV) * t.camera.aspect);
-        const neededDist = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
-        if (neededDist > (t.neededCameraDist || 0)) t.radius = Math.max(t.radius, neededDist);
-        t.neededCameraDist = neededDist;
+        t.radius = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
       }
     };
 
@@ -889,10 +903,7 @@ export default function PackageBoxMockup() {
       t.canvasPointerActive = false;
       t.dragging = false;
       t.panning = false;
-      if (t.objectDrag) {
-        t.objectDrag = null;
-        t.recomputeFraming?.();
-      }
+      t.objectDrag = null;
     };
     const onWheel = (e) => {
       if (e.ctrlKey || e.metaKey) return; // ctrl/cmd+wheel zooms the artboard instead — see the viewport-level handler
@@ -1229,9 +1240,9 @@ export default function PackageBoxMockup() {
 
     resolveStacking(stackItems);
 
-    // skipped while a drag is live — see t.recomputeFraming's own comment for why
-    // recentering the camera mid-drag would fight the drag itself.
-    if (!t.objectDrag) t.recomputeFraming?.();
+    // shadow coverage tracks the scene automatically; the orbit camera itself does
+    // not — see t.resetCameraView.
+    t.updateShadowFit?.();
 
     // ring under whichever object is the active selection (any kind) — only shown once
     // there's more than one object total, since with just one it's obvious which one
@@ -2629,6 +2640,15 @@ export default function PackageBoxMockup() {
           >
             オブジェクトをクリック:選択 / ドラッグ:移動 / それ以外をドラッグ:回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
           </div>
+
+          <button
+            onClick={() => three.current.resetCameraView?.()}
+            className="absolute top-3 right-3 text-xs px-2 py-1 rounded"
+            style={{ background: "rgba(28,26,23,0.85)", color: "#5fd3d9", border: "1px solid #3a5a78" }}
+            title="オブジェクトを動かしてもカメラは自動で動きません。全体が収まる視点に戻したいときはこちら。"
+          >
+            ⟲ カメラをリセット
+          </button>
 
           <div
             className="absolute bottom-3 left-3 flex items-center gap-2 text-xs px-2 py-1.5 rounded"
