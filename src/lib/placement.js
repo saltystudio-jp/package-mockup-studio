@@ -15,12 +15,24 @@ export function composePlacementQuaternion({ orientation, tiltX = 0, tiltZ = 0, 
 }
 
 // after a group's quaternion + x/z position are set (with y still 0), lifts it so its
-// lowest point sits at world y=0 (plus a manual float offset) — same "measure the
+// lowest point sits at `floorY` (plus a manual float offset) — same "measure the
 // rendered bounding box, don't precompute from raw dimensions" approach the box uses,
-// which stays correct regardless of orientation/tilt.
-export function groundSnapY(group, floatHeightMm, SCALE) {
+// which stays correct regardless of orientation/tilt. `floorY` defaults to the ground
+// (0) but the stacking resolver (stacking.js) passes the resolved top of whatever this
+// object rests on instead. `measureObj` lets the caller measure a specific child (the
+// box passes its body mesh, not the whole boxGroup, so an opened lid doesn't affect how
+// low the box itself sits) while still positioning the full group.
+export function groundSnapY(group, floatHeightMm, SCALE, { floorY = 0, measureObj } = {}) {
   group.position.y = 0;
   group.updateMatrixWorld(true);
+  const box = new THREE.Box3().setFromObject(measureObj || group);
+  return floorY - box.min.y + floatHeightMm * SCALE;
+}
+
+// measures a group's world-space XZ footprint (with y assumed already at the group's
+// own baseline — call after position.y is set to whatever "0-ish" reference the caller
+// is using, e.g. within the stacking resolver's pass 1 measurement step).
+export function measureXZFootprint(group) {
   const box = new THREE.Box3().setFromObject(group);
-  return -box.min.y + floatHeightMm * SCALE;
+  return { minX: box.min.x, maxX: box.max.x, minZ: box.min.z, maxZ: box.max.z };
 }

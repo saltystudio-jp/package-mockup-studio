@@ -158,6 +158,19 @@ export default function PiecePanel({ shapeDefs, symbols, pieceInstances, selecte
           <SliderField label="傾き(前後)" value={selected.tiltX} onChange={(v) => patch({ tiltX: v })} />
           <SliderField label="傾き(左右)" value={selected.tiltZ} onChange={(v) => patch({ tiltZ: v })} />
           <NumField label="地面からの高さ" value={selected.floatHeight} onChange={(v) => patch({ floatHeight: v })} min={-200} max={500} unit="mm" />
+
+          <div className="mt-3 pt-3" style={{ borderTop: "1px solid #3a372f" }}>
+            <label className="flex items-center gap-2 mb-2 text-xs" style={{ color: "#a89f8f" }}>
+              <input
+                type="checkbox"
+                checked={selected.groundSnap !== false}
+                onChange={(e) => patch({ groundSnap: e.target.checked })}
+              />
+              接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
+            </label>
+            <NumField label="レイヤー" value={selected.layer ?? 0} onChange={(v) => patch({ layer: Math.round(v) })} min={0} max={20} />
+          </div>
+
           <p className="text-xs mt-2" style={{ color: "#7d7568" }}>
             選択中: 駒{selectedIndex + 1}
           </p>

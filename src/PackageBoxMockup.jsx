@@ -22,7 +22,8 @@ import {
   cropToCanvas,
 } from "./lib/imaging.js";
 import { createSymbol, buildSymbolFaceCanvas, symbolAspect, DEFAULT_SYMBOL_COLOR } from "./lib/symbols.js";
-import { composePlacementQuaternion, groundSnapY } from "./lib/placement.js";
+import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
+import { resolveStacking } from "./lib/stacking.js";
 
 const ROUND_SEGMENTS = 4; // corner smoothness for RoundedBoxGeometry
 
@@ -412,6 +413,8 @@ export default function PackageBoxMockup() {
     orientation: "standing",
     lidOpen: 0,
     floatHeight: 0,
+    layer: 0,
+    groundSnap: true,
     linked: {},
   };
   const [boxInstances, setBoxInstances] = useState([{ id: 1, ...DEFAULT_INSTANCE }]);
@@ -440,6 +443,8 @@ export default function PackageBoxMockup() {
     orientation: "lying",
     symbolId: null,
     floatHeight: 0,
+    layer: 0,
+    groundSnap: true,
   };
   const [cardInstances, setCardInstances] = useState([]);
   const [selectedCardId, setSelectedCardId] = useState(null);
@@ -463,6 +468,8 @@ export default function PackageBoxMockup() {
     shapeDefId: null,
     symbolId: null,
     floatHeight: 0,
+    layer: 1,
+    groundSnap: true,
   };
   const [pieceInstances, setPieceInstances] = useState([]);
   const [selectedPieceId, setSelectedPieceId] = useState(null);
@@ -995,19 +1002,35 @@ export default function PackageBoxMockup() {
     });
   }, [pieceShapeDefs]);
 
-  // ---- add/remove box AND card instances to match state, and place each one per its
-  // own position/rotation/tilt/orientation/floatHeight. Combined into one effect (rather
-  // than a separate one per object kind) because camera framing/shadow fitting below
-  // needs a bounding box across every kind at once — and the ground-snap/layering
-  // resolver (stacking multiple kinds on top of each other) will need the same joint
-  // pass once it's added. ----
+  // ---- add/remove box/card/piece instances to match state, and place each one per its
+  // own position/rotation/tilt/orientation/floatHeight/layer/groundSnap. Combined into
+  // one effect (rather than one per object kind) because camera framing/shadow fitting
+  // below needs a bounding box across every kind at once, AND the ground-snap/layering
+  // resolver needs every kind's footprint together to know what rests on what.
+  //
+  // Two passes:
+  //  1. Set quaternion + XZ position (Y left at 0) for every object of every kind, and
+  //     record a `place(floorY)` closure per object — XZ footprint doesn't depend on Y,
+  //     so it's safe to measure before Y is known.
+  //  2. Hand every object to resolveStacking (stacking.js), which walks layers
+  //     bottom-to-top and tells each grounded object what Y to rest on (0, or the top
+  //     of whatever lower-layer object it overlaps) — then call place(floorY) to
+  //     actually assign group.position.y. ----
   useEffect(() => {
     const t = three.current;
     if (!t.allBoxesGroup) return;
 
     t.syncInstances?.(boxInstances.map((b) => b.id));
+    t.syncCardInstances?.(cardInstances.map((c) => c.id));
+    // pieces only have a mesh worth positioning once their shape def actually exists
+    // (a piece can be added before any shape def is defined, e.g. mid-edit) — those
+    // without a resolvable geometry are just left unsynced until a shape def is assigned.
+    const placeablePieces = pieceInstances.filter((p) => t.pieceShapeGeos[p.shapeDefId]);
+    t.syncPieceInstances?.(placeablePieces);
 
     const reference = boxInstances[0];
+    const stackItems = [];
+
     boxInstances.forEach((rawData) => {
       const inst = t.instances[rawData.id];
       if (!inst) return;
@@ -1031,34 +1054,77 @@ export default function PackageBoxMockup() {
       inst.boxGroup.position.set(data.x * SCALE, 0, data.z * SCALE);
       inst.boxGroup.updateMatrixWorld(true);
 
-      const bodyBox = new THREE.Box3().setFromObject(inst.body);
-      inst.boxGroup.position.y = -bodyBox.min.y + data.floatHeight * SCALE;
-      inst.boxGroup.updateMatrixWorld(true);
+      const footprint = measureXZFootprint(inst.boxGroup);
+      stackItems.push({
+        id: `box:${rawData.id}`,
+        layer: data.layer ?? 0,
+        groundSnap: data.groundSnap !== false,
+        ...footprint,
+        // the box's own rest offset is measured from its BODY specifically (not the
+        // whole group, which would include an opened lid) — an open lid shouldn't
+        // change how low the box itself sits, same as before this stacking resolver
+        // existed.
+        place: (floorY) => {
+          const y = data.groundSnap === false
+            ? data.floatHeight * SCALE
+            : groundSnapY(inst.boxGroup, data.floatHeight || 0, SCALE, { floorY, measureObj: inst.body });
+          inst.boxGroup.position.y = y;
+          inst.boxGroup.updateMatrixWorld(true);
+          return { y, topY: new THREE.Box3().setFromObject(inst.boxGroup).max.y };
+        },
+      });
     });
 
-    t.syncCardInstances?.(cardInstances.map((c) => c.id));
     cardInstances.forEach((data) => {
       const rec = t.cardInstancesTHREE[data.id];
       if (!rec) return;
       rec.group.quaternion.copy(composePlacementQuaternion(data));
       rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
-      rec.group.position.y = groundSnapY(rec.group, data.floatHeight || 0, SCALE);
+      rec.group.updateMatrixWorld(true);
+
+      const footprint = measureXZFootprint(rec.group);
+      stackItems.push({
+        id: `card:${data.id}`,
+        layer: data.layer ?? 0,
+        groundSnap: data.groundSnap !== false,
+        ...footprint,
+        place: (floorY) => {
+          const y = data.groundSnap === false
+            ? data.floatHeight * SCALE
+            : groundSnapY(rec.group, data.floatHeight || 0, SCALE, { floorY });
+          rec.group.position.y = y;
+          rec.group.updateMatrixWorld(true);
+          return { y, topY: new THREE.Box3().setFromObject(rec.group).max.y };
+        },
+      });
     });
 
-    // pieces only have a mesh worth positioning once their shape def actually exists
-    // (a piece can be added before any shape def is defined, e.g. mid-edit) — those
-    // without a resolvable geometry are just left at their synced default pose until
-    // a shape def is assigned.
-    const placeablePieces = pieceInstances.filter((p) => t.pieceShapeGeos[p.shapeDefId]);
-    t.syncPieceInstances?.(placeablePieces);
     placeablePieces.forEach((data) => {
       const rec = t.pieceInstancesTHREE[data.id];
       if (!rec) return;
       rec.mesh.geometry = t.pieceShapeGeos[data.shapeDefId];
       rec.group.quaternion.copy(composePlacementQuaternion({ ...data, orientation: "lying" }));
       rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
-      rec.group.position.y = groundSnapY(rec.group, data.floatHeight || 0, SCALE);
+      rec.group.updateMatrixWorld(true);
+
+      const footprint = measureXZFootprint(rec.group);
+      stackItems.push({
+        id: `piece:${data.id}`,
+        layer: data.layer ?? 0,
+        groundSnap: data.groundSnap !== false,
+        ...footprint,
+        place: (floorY) => {
+          const y = data.groundSnap === false
+            ? data.floatHeight * SCALE
+            : groundSnapY(rec.group, data.floatHeight || 0, SCALE, { floorY });
+          rec.group.position.y = y;
+          rec.group.updateMatrixWorld(true);
+          return { y, topY: new THREE.Box3().setFromObject(rec.group).max.y };
+        },
+      });
     });
+
+    resolveStacking(stackItems);
 
     const fullBox = new THREE.Box3().setFromObject(t.allBoxesGroup);
     if (t.allCardsGroup && cardInstances.length) fullBox.union(new THREE.Box3().setFromObject(t.allCardsGroup));
@@ -2480,6 +2546,32 @@ export default function PackageBoxMockup() {
           <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
             選択中の箱(箱{boxInstances.findIndex((b) => b.id === selectedInstance.id) + 1})のみに適用されます(「連動」で箱1に合わせることもできます)。
           </p>
+
+          <div className="mt-3 pt-3" style={{ borderTop: "1px solid #3a372f" }}>
+            <label className="flex items-center gap-2 mb-2 text-xs" style={{ color: "#a89f8f" }}>
+              <input
+                type="checkbox"
+                checked={displayValue("groundSnap") !== false}
+                onChange={(e) => setParamValue("groundSnap", e.target.checked)}
+              />
+              接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
+            </label>
+            <label className="flex items-center justify-between gap-2 text-sm">
+              <span style={{ color: "#a89f8f" }}>レイヤー</span>
+              <input
+                type="number"
+                min={0}
+                max={20}
+                value={displayValue("layer") ?? 0}
+                onChange={(e) => setParamValue("layer", Math.max(0, Math.min(20, Math.round(Number(e.target.value)) || 0)))}
+                className="no-spinner w-16 rounded px-2 py-1 text-right"
+                style={{ background: "#242220", border: "1px solid #3a372f", color: "#efe6d4", fontFamily: "'JetBrains Mono', monospace", fontSize: "13px" }}
+              />
+            </label>
+            <p className="text-xs mt-1" style={{ color: "#7d7568" }}>
+              数字が大きいレイヤーほど上。接地オフのオブジェクトは「地面からの高さ」の数値がそのままY座標になります(自動配置の対象外)。
+            </p>
+          </div>
         </div>
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
