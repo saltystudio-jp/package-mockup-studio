@@ -5,6 +5,7 @@
 // pipeline is reused for SVG-imported shapes later (SVGLoader also produces THREE.Shape
 // objects), so a preset and a custom SVG piece are otherwise identical downstream.
 import * as THREE from "three";
+import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 
 // each preset is defined once in a normalized unit square (-0.5..0.5 on both axes) and
 // scaled to the piece's actual W/D at build time — so one definition works at any size.
@@ -61,6 +62,53 @@ export function buildPresetShape(kind, cornerFrac) {
     default:
       return unitRoundedSquareShape(cornerFrac);
   }
+}
+
+// parses an uploaded SVG's outline(s) into the same normalized unit-square space the
+// presets above live in, so a custom SVG piece plugs into buildExtrudedPieceGeometry
+// exactly like a preset does. Curves are flattened to polygons (via Shape.getPoints)
+// rather than kept as exact bezier/arc curves — losing that precision is invisible at a
+// reasonable sample count and makes normalizing (recenter + uniform scale + SVG's
+// Y-down → shape-space Y-up flip) straightforward on plain point arrays instead of
+// having to transform each curve type individually. Multiple subpaths (e.g. a logo with
+// separate letters, or a shape with holes) all come through as separate Shape entries —
+// ExtrudeGeometry accepts a shapes ARRAY natively and extrudes/caps each one, so no
+// special-casing is needed downstream.
+export function parseSvgToUnitShapes(svgText) {
+  const data = new SVGLoader().parse(svgText);
+  const rawShapes = [];
+  data.paths.forEach((path) => {
+    SVGLoader.createShapes(path).forEach((s) => rawShapes.push(s));
+  });
+  if (rawShapes.length === 0) return null;
+
+  const SAMPLES = 48;
+  const bounds = { minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity };
+  const grow = (p) => {
+    bounds.minX = Math.min(bounds.minX, p.x);
+    bounds.maxX = Math.max(bounds.maxX, p.x);
+    bounds.minY = Math.min(bounds.minY, p.y);
+    bounds.maxY = Math.max(bounds.maxY, p.y);
+  };
+  rawShapes.forEach((s) => {
+    s.getPoints(SAMPLES).forEach(grow);
+    (s.holes || []).forEach((h) => h.getPoints(SAMPLES).forEach(grow));
+  });
+
+  const w = Math.max(1e-6, bounds.maxX - bounds.minX);
+  const h = Math.max(1e-6, bounds.maxY - bounds.minY);
+  const scale = 1 / Math.max(w, h);
+  const cx = (bounds.minX + bounds.maxX) / 2;
+  const cy = (bounds.minY + bounds.maxY) / 2;
+  const norm = (p) => new THREE.Vector2((p.x - cx) * scale, -(p.y - cy) * scale);
+
+  const shapes = rawShapes.map((s) => {
+    const outer = new THREE.Shape(s.getPoints(SAMPLES).map(norm));
+    outer.holes = (s.holes || []).map((hole) => new THREE.Path(hole.getPoints(SAMPLES).map(norm)));
+    return outer;
+  });
+
+  return { shapes, aspect: w / h };
 }
 
 // splits ExtrudeGeometry's default 2-group layout (group 0 = top+bottom caps combined,

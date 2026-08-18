@@ -6,7 +6,7 @@ import CardPanel from "./components/CardPanel.jsx";
 import PiecePanel from "./components/PiecePanel.jsx";
 import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
 import PieceShapeLibraryPanel from "./components/PieceShapeLibraryPanel.jsx";
-import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry } from "./lib/shapes2d.js";
+import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry, parseSvgToUnitShapes } from "./lib/shapes2d.js";
 import {
   imgW,
   imgH,
@@ -993,7 +993,16 @@ export default function PackageBoxMockup() {
     });
     pieceShapeDefs.forEach((def) => {
       t.pieceShapeGeos[def.id]?.dispose();
-      const shape = buildPresetShape(def.kind, def.cornerFrac);
+      // custom SVG shapes are re-parsed from the stored source text each time (cheap
+      // for icon-sized SVGs) rather than caching a parsed THREE.Shape in React state —
+      // keeps the shape def itself a plain, inspectable object.
+      let shape;
+      if (def.kind === "svg" && def.svgText) {
+        const parsed = parseSvgToUnitShapes(def.svgText);
+        shape = parsed ? parsed.shapes : buildPresetShape("roundedSquare", def.cornerFrac);
+      } else {
+        shape = buildPresetShape(def.kind, def.cornerFrac);
+      }
       t.pieceShapeGeos[def.id] = buildExtrudedPieceGeometry(shape, {
         widthUnits: def.w * SCALE,
         depthUnits: def.d * SCALE,
@@ -1970,6 +1979,31 @@ export default function PackageBoxMockup() {
     setPieceShapeDefs((prev) => [...prev, { id, name: `形状 ${num}`, ...DEFAULT_PIECE_SHAPE_DEF }]);
     return id;
   };
+  // imports an uploaded SVG's outline as a new custom shape def — pushed to shape,
+  // extruded exactly like a preset (see parseSvgToUnitShapes/buildExtrudedPieceGeometry
+  // in shapes2d.js). Defaults the new def's W/D to the SVG's own aspect ratio (at a
+  // fixed 30mm long edge) so it isn't squished on first use.
+  const addPieceShapeDefFromSvg = (file) => {
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const svgText = ev.target.result;
+      const parsed = parseSvgToUnitShapes(svgText);
+      if (!parsed) {
+        alert("このSVGから形状を読み取れませんでした。");
+        return;
+      }
+      const id = nextPieceShapeIdRef.current++;
+      const num = nextPieceShapeNumRef.current++;
+      const longEdge = 30;
+      const w = parsed.aspect >= 1 ? longEdge : longEdge * parsed.aspect;
+      const d = parsed.aspect >= 1 ? longEdge / parsed.aspect : longEdge;
+      setPieceShapeDefs((prev) => [
+        ...prev,
+        { id, name: `形状 ${num}(SVG)`, kind: "svg", svgText, w, d, thickness: DEFAULT_PIECE_SHAPE_DEF.thickness, cornerFrac: 0 },
+      ]);
+    };
+    reader.readAsText(file);
+  };
   const updatePieceShapeDef = (id, patch) => {
     setPieceShapeDefs((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
   };
@@ -2933,6 +2967,7 @@ export default function PackageBoxMockup() {
         <PieceShapeLibraryPanel
           shapeDefs={pieceShapeDefs}
           onAdd={addPieceShapeDef}
+          onAddFromSvg={addPieceShapeDefFromSvg}
           onUpdate={updatePieceShapeDef}
           onRemove={removePieceShapeDef}
         />
