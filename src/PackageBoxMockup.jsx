@@ -2,6 +2,8 @@ import React, { useState, useRef, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
+import CardPanel from "./components/CardPanel.jsx";
+import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
 import {
   imgW,
   imgH,
@@ -12,7 +14,12 @@ import {
   trimTransparentCanvas,
   hexToRgba,
   makePasteHandler,
+  coverFitRepeatOffset,
+  detectAlphaCornerRadiusPx,
+  cropToCanvas,
 } from "./lib/imaging.js";
+import { createSymbol, buildSymbolFaceCanvas, symbolAspect, DEFAULT_SYMBOL_COLOR } from "./lib/symbols.js";
+import { composePlacementQuaternion, groundSnapY } from "./lib/placement.js";
 
 const ROUND_SEGMENTS = 4; // corner smoothness for RoundedBoxGeometry
 
@@ -244,7 +251,7 @@ function getEffectiveInstance(inst, reference) {
 
 function fitShadowToBox(t) {
   if (!t.key || !t.allBoxesGroup) return;
-  const box = new THREE.Box3().setFromObject(t.allBoxesGroup);
+  const box = t.fullBox || new THREE.Box3().setFromObject(t.allBoxesGroup);
   const size = new THREE.Vector3();
   box.getSize(size);
   const radius = Math.max(0.3, Math.max(size.x, size.y, size.z) * 0.5 * Math.SQRT2 + 0.15);
@@ -408,6 +415,33 @@ export default function PackageBoxMockup() {
   const [selectedBoxId, setSelectedBoxId] = useState(1);
   const nextBoxIdRef = useRef(2);
 
+  // ---- symbol library: shared image+crop+color assets, referenced by card (and
+  // later piece) instances instead of uploading a separate image per instance ----
+  const [symbols, setSymbols] = useState([]);
+  const nextSymbolIdRef = useRef(1);
+  const nextSymbolNumRef = useRef(1);
+
+  // ---- cards: design is global (shared shape/size), placement is per-instance —
+  // same split as the box above. Cards start empty (opt-in feature, unlike the box
+  // which always has one instance since it's the app's core object). ----
+  const [cardW, setCardW] = useState(63);
+  const [cardD, setCardD] = useState(88);
+  const [cardThickness, setCardThickness] = useState(1.5);
+  const [cardCornerRadius, setCardCornerRadius] = useState(3);
+  const DEFAULT_CARD_INSTANCE = {
+    x: 0,
+    z: 0,
+    rotY: 0,
+    tiltX: 0,
+    tiltZ: 0,
+    orientation: "lying",
+    symbolId: null,
+    floatHeight: 0,
+  };
+  const [cardInstances, setCardInstances] = useState([]);
+  const [selectedCardId, setSelectedCardId] = useState(null);
+  const nextCardIdRef = useRef(1);
+
   const mountRef = useRef(null);
   const viewportRef = useRef(null);
   const artboardRef = useRef(null);
@@ -421,7 +455,7 @@ export default function PackageBoxMockup() {
   const spacePressedRef = useRef(false);
   const artboardPanRef = useRef(null);
   const artboardFittedRef = useRef(false);
-  const prevInstanceCountRef = useRef(1);
+  const neededCameraDistRef = useRef(0);
 
   const three = useRef({
     scene: null,
@@ -577,6 +611,41 @@ export default function PackageBoxMockup() {
     };
     t.syncInstances = syncInstances;
 
+    // cards: unlike the box (one shared material set for every copy, since the box
+    // design is uniform), each card instance can show a DIFFERENT symbol — so geometry
+    // is shared but every card instance gets its OWN material set, rebuilt whenever its
+    // symbol assignment changes (see the card texture effect below).
+    const allCardsGroup = new THREE.Group();
+    scene.add(allCardsGroup);
+    const cardGeo = new RoundedBoxGeometry(0.63, 0.015, 0.88, ROUND_SEGMENTS, 0.03);
+    const cardInstancesTHREE = {};
+    const syncCardInstances = (ids) => {
+      const idSet = new Set(ids);
+      Object.keys(cardInstancesTHREE).forEach((key) => {
+        if (idSet.has(Number(key))) return;
+        const rec = cardInstancesTHREE[key];
+        rec.mats.forEach((m) => {
+          if (m.map) m.map.dispose();
+          m.dispose();
+        });
+        allCardsGroup.remove(rec.group);
+        delete cardInstancesTHREE[key];
+      });
+      ids.forEach((id) => {
+        if (cardInstancesTHREE[id]) return;
+        const mats = Array.from({ length: 6 }, () => makeFaceMaterial());
+        const mesh = new THREE.Mesh(t.cardGeo, mats);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData = { kind: "card", instanceId: id };
+        const group = new THREE.Group();
+        group.add(mesh);
+        allCardsGroup.add(group);
+        cardInstancesTHREE[id] = { group, mesh, mats };
+      });
+    };
+    t.syncCardInstances = syncCardInstances;
+
     t.scene = scene;
     t.camera = camera;
     t.renderer = renderer;
@@ -587,6 +656,9 @@ export default function PackageBoxMockup() {
     t.allBoxesGroup = allBoxesGroup;
     t.instances = instances;
     t.ground = ground;
+    t.allCardsGroup = allCardsGroup;
+    t.cardGeo = cardGeo;
+    t.cardInstancesTHREE = cardInstancesTHREE;
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -819,8 +891,23 @@ export default function PackageBoxMockup() {
     });
   }, [bodyW, bodyD, bodyH, lidH, clearance, bevelRadius]);
 
-  // ---- add/remove box instances to match boxInstances, and place each one per its
-  // own position/rotation/tilt/orientation/floatHeight ----
+  // ---- rebuild the shared card geometry when dims/corner radius change ----
+  useEffect(() => {
+    const t = three.current;
+    if (!t.cardGeo) return;
+    t.cardGeo.dispose();
+    t.cardGeo = new RoundedBoxGeometry(cardW * SCALE, cardThickness * SCALE, cardD * SCALE, ROUND_SEGMENTS, cardCornerRadius * SCALE);
+    Object.values(t.cardInstancesTHREE || {}).forEach((rec) => {
+      rec.mesh.geometry = t.cardGeo;
+    });
+  }, [cardW, cardD, cardThickness, cardCornerRadius]);
+
+  // ---- add/remove box AND card instances to match state, and place each one per its
+  // own position/rotation/tilt/orientation/floatHeight. Combined into one effect (rather
+  // than a separate one per object kind) because camera framing/shadow fitting below
+  // needs a bounding box across every kind at once — and the ground-snap/layering
+  // resolver (stacking multiple kinds on top of each other) will need the same joint
+  // pass once it's added. ----
   useEffect(() => {
     const t = three.current;
     if (!t.allBoxesGroup) return;
@@ -856,8 +943,19 @@ export default function PackageBoxMockup() {
       inst.boxGroup.updateMatrixWorld(true);
     });
 
+    t.syncCardInstances?.(cardInstances.map((c) => c.id));
+    cardInstances.forEach((data) => {
+      const rec = t.cardInstancesTHREE[data.id];
+      if (!rec) return;
+      rec.group.quaternion.copy(composePlacementQuaternion(data));
+      rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
+      rec.group.position.y = groundSnapY(rec.group, data.floatHeight || 0, SCALE);
+    });
+
     const fullBox = new THREE.Box3().setFromObject(t.allBoxesGroup);
+    if (t.allCardsGroup && cardInstances.length) fullBox.union(new THREE.Box3().setFromObject(t.allCardsGroup));
     t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
+    t.fullBox = fullBox;
     fitShadowToBox(t);
 
     // ring under the selected box — only shown once there's more than one, since with
@@ -877,18 +975,82 @@ export default function PackageBoxMockup() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boxInstances, bodyW, bodyD, bodyH, lidH, clearance, bevelRadius, selectedBoxId]);
+  }, [boxInstances, bodyW, bodyD, bodyH, lidH, clearance, bevelRadius, selectedBoxId, cardInstances, cardW, cardD, cardThickness, cardCornerRadius]);
 
-  // ---- when a box is added, nudge the orbit camera out if needed so the newly
-  // wider arrangement still fits in view — never nudges IN, so it never fights a
-  // manual zoom the user made while just editing an existing box ----
+  // ---- rebuild each card instance's OWN materials (front face = its symbol's image,
+  // cover-fit via UV repeat/offset so it never distorts; the other 5 faces = the
+  // symbol's tint color) whenever that instance's symbol assignment, the symbol
+  // library's contents, or the card's face aspect ratio changes. Keyed off a derived
+  // "which instance points at which symbol" string rather than the raw cardInstances
+  // array so dragging a card's position doesn't re-bake every texture on every frame. ----
+  const cardSymbolAssignmentKey = cardInstances.map((c) => `${c.id}:${c.symbolId ?? ""}`).join("|");
   useEffect(() => {
     const t = three.current;
-    if (boxInstances.length > prevInstanceCountRef.current && t.shadowRadius) {
-      t.radius = Math.max(t.radius, t.shadowRadius * 1.7);
+    if (!t.cardInstancesTHREE) return;
+    const faceAspect = cardW / cardD;
+    cardInstances.forEach((inst) => {
+      const rec = t.cardInstancesTHREE[inst.id];
+      if (!rec) return;
+      const symbol = symbols.find((s) => s.id === inst.symbolId) || null;
+      const canvas = buildSymbolFaceCanvas(symbol);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.encoding = THREE.sRGBEncoding;
+      const texAspect = symbol?.img ? symbolAspect(symbol) : 1;
+      const { repeat, offset } = coverFitRepeatOffset(texAspect, faceAspect);
+      tex.repeat.set(repeat[0], repeat[1]);
+      tex.offset.set(offset[0], offset[1]);
+      tex.needsUpdate = true;
+
+      const bodyColor = new THREE.Color(symbol?.color || DEFAULT_SYMBOL_COLOR);
+      rec.mats.forEach((m, i) => {
+        if (m.map) m.map.dispose();
+        if (i === 2) {
+          // top face (index 2 in BoxGeometry's [right,left,top,bottom,front,back] order)
+          // — faces up when lying flat, faces the camera once "standing" rotates the
+          // whole card, same as the box's lid/top face convention.
+          m.map = tex;
+          m.color.set(0xffffff);
+        } else {
+          m.map = null;
+          m.color.copy(bodyColor);
+        }
+        m.needsUpdate = true;
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cardSymbolAssignmentKey, symbols, cardW, cardD]);
+
+  // ---- when a box/card is added OR moved further out, nudge the orbit camera out if
+  // needed so the arrangement still fits in view — never nudges IN, so it never fights a
+  // manual zoom the user made. t.shadowRadius is recomputed from the combined box+card
+  // bounding box (see fitShadowToBox/t.fullBox above), so this single nudge covers both
+  // kinds.
+  //
+  // Depends on the full boxInstances/cardInstances arrays (not just their .length) —
+  // moving an existing card further from the box needs more room just as much as adding
+  // a new one does, and only a reference-identity change on the whole array (which a
+  // position edit also produces, same as the placement effect's own dependency below)
+  // reliably signals that.
+  //
+  // Distance is derived from actual trig (bounding-sphere-fits-in-frustum) compared
+  // against the LARGEST distance we've ever required (neededCameraDistRef) instead of a
+  // flat "shadowRadius * 1.7" multiplier — that flat multiplier (the original box-only
+  // version of this heuristic) undershoots once a small, far-off object makes the
+  // required distance much larger relative to shadowRadius than a same-sized-boxes-
+  // clustered-together arrangement would. ----
+  useEffect(() => {
+    const t = three.current;
+    if (t.shadowRadius && t.camera) {
+      const halfV = (t.camera.fov * Math.PI) / 360;
+      const halfH = Math.atan(Math.tan(halfV) * t.camera.aspect);
+      const neededDist = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
+      if (neededDist > neededCameraDistRef.current) {
+        t.radius = Math.max(t.radius, neededDist);
+      }
+      neededCameraDistRef.current = neededDist;
     }
-    prevInstanceCountRef.current = boxInstances.length;
-  }, [boxInstances.length]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [boxInstances, cardInstances]);
 
   // ---- ground visibility ----
   useEffect(() => {
@@ -1487,6 +1649,89 @@ export default function PackageBoxMockup() {
     if (selectedBoxId === id) setSelectedBoxId(remaining[0].id);
   };
 
+  // ---- symbol library management ----
+  const addSymbol = () => {
+    const id = nextSymbolIdRef.current++;
+    const num = nextSymbolNumRef.current++;
+    setSymbols((prev) => [...prev, createSymbol({ id, name: `シンボル ${num}` })]);
+  };
+  const updateSymbol = (id, patch) => {
+    setSymbols((prev) => prev.map((s) => (s.id === id ? { ...s, ...patch } : s)));
+  };
+  const renameSymbol = (id, name) => updateSymbol(id, { name });
+  const setSymbolColor = (id, color) => updateSymbol(id, { color });
+  const removeSymbol = (id) => setSymbols((prev) => prev.filter((s) => s.id !== id));
+  const uploadSymbolImage = (id, e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () =>
+        updateSymbol(id, { img, fileName: file.name, transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } });
+      img.src = ev.target.result;
+    };
+    reader.readAsDataURL(file);
+  };
+  const pasteSymbolImage = (id) =>
+    makePasteHandler((img) =>
+      updateSymbol(id, { img, fileName: "(クリップボードから貼り付け)", transform: { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 } })
+    )();
+  const openSymbolCropEditor = (id) => {
+    const symbol = symbols.find((s) => s.id === id);
+    if (!symbol?.img) return;
+    setCropEditor({
+      img: symbol.img,
+      aspectW: imgW(symbol.img),
+      aspectH: imgH(symbol.img),
+      regions: null,
+      initialCrop: symbol.transform,
+      setTransform: (updater) =>
+        setSymbols((prev) => prev.map((s) => (s.id === id ? { ...s, transform: updater(s.transform) } : s))),
+    });
+  };
+  // detects the corner radius baked into an already-rounded PNG's alpha channel and
+  // converts it from source pixels to mm using the symbol's own crop + the card's
+  // current width, then applies it as the shared card corner radius.
+  const autoDetectCornerRadiusFromSymbol = (id) => {
+    const symbol = symbols.find((s) => s.id === id);
+    if (!symbol?.img) return;
+    const cropped = cropToCanvas(symbol.img, symbol.transform);
+    const radiusPx = detectAlphaCornerRadiusPx(cropped);
+    if (!radiusPx) {
+      alert("この画像から角丸を検出できませんでした(透明な角が見つかりません)。");
+      return;
+    }
+    const mmPerPx = cardW / cropped.width;
+    setCardCornerRadius(Math.max(0, Math.round(radiusPx * mmPerPx * 10) / 10));
+  };
+
+  // ---- card instance management ----
+  const addCardInstance = () => {
+    const id = nextCardIdRef.current++;
+    const spacing = cardW + 20;
+    setCardInstances((prev) => [...prev, { id, ...DEFAULT_CARD_INSTANCE, x: prev.length * spacing }]);
+    setSelectedCardId(id);
+  };
+  const duplicateCardInstance = (sourceId) => {
+    const source = cardInstances.find((c) => c.id === sourceId);
+    if (!source) return;
+    const id = nextCardIdRef.current++;
+    const spacing = cardW + 20;
+    setCardInstances((prev) => [...prev, { ...source, id, x: source.x + spacing }]);
+    setSelectedCardId(id);
+  };
+  const removeCardInstance = (id) => {
+    setCardInstances((prev) => {
+      const remaining = prev.filter((c) => c.id !== id);
+      if (selectedCardId === id) setSelectedCardId(remaining[0]?.id ?? null);
+      return remaining;
+    });
+  };
+  const updateCardInstance = (id, patch) => {
+    setCardInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
+  };
+
   // small "連動" (linked) badge-button shown next to a per-instance control's label —
   // only meaningful for boxes 2+, toggles whether that one param follows box1.
   const linkToggle = (key) => {
@@ -1864,6 +2109,25 @@ export default function PackageBoxMockup() {
             自動回転
           </label>
         </div>
+
+        <CardPanel
+          cardW={cardW}
+          setCardW={setCardW}
+          cardD={cardD}
+          setCardD={setCardD}
+          cardThickness={cardThickness}
+          setCardThickness={setCardThickness}
+          cardCornerRadius={cardCornerRadius}
+          setCardCornerRadius={setCardCornerRadius}
+          symbols={symbols}
+          cardInstances={cardInstances}
+          selectedCardId={selectedCardId}
+          setSelectedCardId={setSelectedCardId}
+          onAdd={addCardInstance}
+          onDuplicate={duplicateCardInstance}
+          onRemove={removeCardInstance}
+          onUpdate={updateCardInstance}
+        />
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
           <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
@@ -2344,6 +2608,18 @@ export default function PackageBoxMockup() {
           },
           lidInnerGuideCanvasRef
         )}
+
+        <SymbolLibraryPanel
+          symbols={symbols}
+          onAddSymbol={addSymbol}
+          onRenameSymbol={renameSymbol}
+          onSetColor={setSymbolColor}
+          onUploadImage={uploadSymbolImage}
+          onPasteImage={pasteSymbolImage}
+          onOpenCropEditor={openSymbolCropEditor}
+          onRemoveSymbol={removeSymbol}
+          onAutoRoundFromAlpha={autoDetectCornerRadiusFromSymbol}
+        />
 
         {exportSettingsCard}
       </div>

@@ -121,6 +121,22 @@ export function trimTransparentCanvas(canvas, paddingFrac = 0.015) {
   return out;
 }
 
+// CSS background-size:cover style fit, in texture repeat/offset terms: given a
+// texture's own aspect ratio and the aspect ratio of the face it's being mapped onto,
+// returns the {repeat, offset} that crops the texture (never stretches it) to fill the
+// face — same math as the scene-background fit, generalized to work on any per-face UV
+// (which for RoundedBoxGeometry and ExtrudeGeometry-based shapes already spans 0..1
+// per face) instead of only the renderer's background plane.
+export function coverFitRepeatOffset(contentAspect, targetAspect) {
+  if (!contentAspect || !targetAspect) return { repeat: [1, 1], offset: [0, 0] };
+  if (contentAspect > targetAspect) {
+    const scale = targetAspect / contentAspect;
+    return { repeat: [scale, 1], offset: [(1 - scale) / 2, 0] };
+  }
+  const scale = contentAspect / targetAspect;
+  return { repeat: [1, scale], offset: [0, (1 - scale) / 2] };
+}
+
 export function hexToRgba(hex, alpha) {
   const m = /^#?([a-f\d]{2})([a-f\d]{2})([a-f\d]{2})$/i.exec(hex || "");
   if (!m) return `rgba(95,211,217,${alpha})`;
