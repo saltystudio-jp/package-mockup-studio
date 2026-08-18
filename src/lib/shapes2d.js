@@ -1,9 +1,15 @@
-// 2D shape presets + extrusion for pieces (駒): "basic shape = a box; thin+rounded = a
-// card; extruded to an arbitrary footprint = a piece" — cards stay on RoundedBoxGeometry
-// (see PackageBoxMockup.jsx) since that's a direct, proven fit, but pieces need genuine
-// arbitrary footprints, so they're built from a THREE.Shape and extruded. The same
-// pipeline is reused for SVG-imported shapes later (SVGLoader also produces THREE.Shape
-// objects), so a preset and a custom SVG piece are otherwise identical downstream.
+// 2D shape presets + extrusion for pieces (駒) AND cards: both are "a flat shape,
+// extruded to a thickness, with sharp (not beveled) edges around the perimeter" — cards
+// use roundedRectShape below (a true-scale rounded rectangle, so a card's corner radius
+// stays circular even though width and depth differ a lot), pieces use one of the
+// PIECE_SHAPE_KINDS presets or an imported SVG outline. Deliberately NOT
+// RoundedBoxGeometry for either: that geometry rounds every edge of the box uniformly
+// (it's built for corners like a real cardboard box's bevel), so applying it to a thin
+// card conflates "round the four corners" with "round the paper-thin edge profile too"
+// — a real card's corners are rounded but its edge stays a sharp flat rectangle in
+// cross-section. The same extrude pipeline is reused for SVG-imported piece shapes
+// (SVGLoader also produces THREE.Shape objects), so a preset and a custom SVG piece are
+// otherwise identical downstream.
 import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 
@@ -35,6 +41,29 @@ function unitRoundedSquareShape(cornerFrac = 0.18) {
   shape.absarc(-s + r, s - r, r, Math.PI / 2, Math.PI, false);
   shape.lineTo(-s, -s + r);
   shape.absarc(-s + r, -s + r, r, Math.PI, Math.PI * 1.5, false);
+  return shape;
+}
+
+// a rounded rectangle built at TRUE scale (real width/depth/radius, not a normalized
+// unit square scaled non-uniformly afterward) — for a card, whose width and depth
+// usually differ a lot (63x88mm), scaling a unit-square corner arc non-uniformly would
+// stretch it into an ellipse instead of keeping the actual mm radius the user asked
+// for. Used with buildExtrudedPieceGeometry passing widthUnits/depthUnits = 1 (the
+// shape is already at final size) so only the thickness axis still needs scaling.
+export function roundedRectShape(width, depth, radius) {
+  const w = width / 2;
+  const d = depth / 2;
+  const r = Math.max(0, Math.min(radius, Math.min(width, depth) / 2));
+  const shape = new THREE.Shape();
+  shape.moveTo(-w + r, -d);
+  shape.lineTo(w - r, -d);
+  if (r > 0) shape.absarc(w - r, -d + r, r, -Math.PI / 2, 0, false);
+  shape.lineTo(w, d - r);
+  if (r > 0) shape.absarc(w - r, d - r, r, 0, Math.PI / 2, false);
+  shape.lineTo(-w + r, d);
+  if (r > 0) shape.absarc(-w + r, d - r, r, Math.PI / 2, Math.PI, false);
+  shape.lineTo(-w, -d + r);
+  if (r > 0) shape.absarc(-w + r, -d + r, r, Math.PI, Math.PI * 1.5, false);
   return shape;
 }
 

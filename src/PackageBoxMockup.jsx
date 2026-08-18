@@ -8,7 +8,7 @@ import CardPanel from "./components/CardPanel.jsx";
 import PiecePanel from "./components/PiecePanel.jsx";
 import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
 import PieceShapeLibraryPanel from "./components/PieceShapeLibraryPanel.jsx";
-import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry, parseSvgToUnitShapes } from "./lib/shapes2d.js";
+import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry, parseSvgToUnitShapes, roundedRectShape } from "./lib/shapes2d.js";
 import {
   imgW,
   imgH,
@@ -690,7 +690,16 @@ export default function PackageBoxMockup() {
     // symbol assignment changes (see the card texture effect below).
     const allCardsGroup = new THREE.Group();
     scene.add(allCardsGroup);
-    const cardGeo = new RoundedBoxGeometry(0.63, 0.015, 0.88, ROUND_SEGMENTS, 0.03);
+    // built via the shape+extrude pipeline (shapes2d.js), NOT RoundedBoxGeometry — see
+    // the comment at the top of shapes2d.js for why: a card's corners should round but
+    // its thin edge profile should stay sharp, which RoundedBoxGeometry can't express
+    // (it rounds every edge uniformly). 3 materials (bottom/top/side), same convention
+    // as pieces — index 1 is the top cap where the symbol image goes.
+    const cardGeo = buildExtrudedPieceGeometry(roundedRectShape(0.63, 0.88, 0.03), {
+      widthUnits: 1,
+      depthUnits: 1,
+      thicknessUnits: 0.015,
+    });
     const cardInstancesTHREE = {};
     const syncCardInstances = (ids) => {
       const idSet = new Set(ids);
@@ -706,7 +715,7 @@ export default function PackageBoxMockup() {
       });
       ids.forEach((id) => {
         if (cardInstancesTHREE[id]) return;
-        const mats = Array.from({ length: 6 }, () => makeFaceMaterial());
+        const mats = Array.from({ length: 3 }, () => makeFaceMaterial());
         const mesh = new THREE.Mesh(t.cardGeo, mats);
         mesh.castShadow = true;
         mesh.receiveShadow = true;
@@ -1129,12 +1138,17 @@ export default function PackageBoxMockup() {
     });
   }, [bodyW, bodyD, bodyH, lidH, clearance, bevelRadius]);
 
-  // ---- rebuild the shared card geometry when dims/corner radius change ----
+  // ---- rebuild the shared card geometry when dims/corner radius change. Built at true
+  // scale (roundedRectShape takes real width/depth/radius) so the corner radius stays a
+  // true circular arc regardless of how different cardW and cardD are — see the
+  // shapes2d.js comment for why RoundedBoxGeometry can't express "round corners, sharp
+  // edge" the way a real card needs. ----
   useEffect(() => {
     const t = three.current;
     if (!t.cardGeo) return;
     t.cardGeo.dispose();
-    t.cardGeo = new RoundedBoxGeometry(cardW * SCALE, cardThickness * SCALE, cardD * SCALE, ROUND_SEGMENTS, cardCornerRadius * SCALE);
+    const shape = roundedRectShape(cardW * SCALE, cardD * SCALE, cardCornerRadius * SCALE);
+    t.cardGeo = buildExtrudedPieceGeometry(shape, { widthUnits: 1, depthUnits: 1, thicknessUnits: cardThickness * SCALE });
     Object.values(t.cardInstancesTHREE || {}).forEach((rec) => {
       rec.mesh.geometry = t.cardGeo;
     });
@@ -1345,12 +1359,12 @@ export default function PackageBoxMockup() {
     pieceShapeDefs,
   ]);
 
-  // ---- rebuild each card instance's OWN materials (front face = its symbol's image,
-  // cover-fit via UV repeat/offset so it never distorts; the other 5 faces = the
-  // symbol's tint color) whenever that instance's symbol assignment, the symbol
-  // library's contents, or the card's face aspect ratio changes. Keyed off a derived
-  // "which instance points at which symbol" string rather than the raw cardInstances
-  // array so dragging a card's position doesn't re-bake every texture on every frame. ----
+  // ---- rebuild each card instance's OWN materials (top face = its symbol's image,
+  // cover-fit via UV repeat/offset so it never distorts; bottom+side = the symbol's
+  // tint color) whenever that instance's symbol assignment, the symbol library's
+  // contents, or the card's face aspect ratio changes. Keyed off a derived "which
+  // instance points at which symbol" string rather than the raw cardInstances array so
+  // dragging a card's position doesn't re-bake every texture on every frame. ----
   const cardSymbolAssignmentKey = cardInstances.map((c) => `${c.id}:${c.symbolId ?? ""}`).join("|");
   useEffect(() => {
     const t = three.current;
@@ -1372,10 +1386,10 @@ export default function PackageBoxMockup() {
       const bodyColor = new THREE.Color(symbol?.color || DEFAULT_SYMBOL_COLOR);
       rec.mats.forEach((m, i) => {
         if (m.map) m.map.dispose();
-        if (i === 2) {
-          // top face (index 2 in BoxGeometry's [right,left,top,bottom,front,back] order)
-          // — faces up when lying flat, faces the camera once "standing" rotates the
-          // whole card, same as the box's lid/top face convention.
+        if (i === 1) {
+          // top cap (index 1 — see splitCapGroups in shapes2d.js: 0=bottom,1=top,
+          // 2=side) — faces up when lying flat, faces the camera once "standing"
+          // rotates the whole card, same as the box's lid/top face convention.
           m.map = tex;
           m.color.set(0xffffff);
         } else {
@@ -2215,7 +2229,7 @@ export default function PackageBoxMockup() {
 
   return (
     <div
-      className="flex w-full"
+      className="flex flex-col w-full"
       style={{
         height: "100vh",
         background: "#151412",
@@ -2251,26 +2265,28 @@ export default function PackageBoxMockup() {
           background-color: #5c584a;
         }
       `}</style>
-      {/* left control rail — full height, drag-resizable width */}
-      <div
-        className="flex-shrink-0 overflow-y-auto p-4"
-        style={{ width: sidebarWidth, background: "#1c1a17", borderRight: "1px solid #302d27" }}
-      >
-        <div className="mb-4">
-          <div
-            className="text-xs tracking-widest uppercase"
-            style={{ color: "#e2432a", letterSpacing: "0.15em" }}
-          >
-            Package Mockup Studio
-          </div>
-          <h1
-            className="text-xl mt-1"
-            style={{ fontFamily: "Fraunces, serif", fontWeight: 600, color: "#f4ede0" }}
-          >
-            化粧箱プレビュー
-          </h1>
-        </div>
 
+      {/* top toolbar — thin, full width */}
+      <div
+        className="flex-shrink-0 flex items-center gap-3 px-4"
+        style={{ height: "48px", background: "#1c1a17", borderBottom: "1px solid #302d27" }}
+      >
+        <div className="text-xs tracking-widest uppercase" style={{ color: "#e2432a", letterSpacing: "0.15em" }}>
+          Package Mockup Studio
+        </div>
+        <h1 className="text-base" style={{ fontFamily: "Fraunces, serif", fontWeight: 600, color: "#f4ede0" }}>
+          化粧箱プレビュー
+        </h1>
+      </div>
+
+      {/* main row: outliner (left) / viewport (center) / inspector (right, resizable) */}
+      <div className="flex flex-1 min-h-0">
+
+      {/* outliner rail — fixed width, left */}
+      <div
+        className="flex-shrink-0 overflow-y-auto p-3"
+        style={{ order: 0, width: "260px", background: "#1c1a17", borderRight: "1px solid #302d27" }}
+      >
         <Outliner
           boxInstances={boxInstances}
           cardInstances={cardInstances}
@@ -2281,7 +2297,18 @@ export default function PackageBoxMockup() {
           onDuplicate={duplicateInstance}
           onRemove={removeInstance}
         />
+      </div>
 
+      {/* inspector rail — contextual (selected object) + scene-wide settings,
+          drag-resizable width. Visually placed on the RIGHT via `order` (CSS), while
+          staying in this position in the source — the viewport block right after this
+          one in the source is `order: 1` so it renders in the middle instead; keeping
+          source order as-is and reordering with CSS avoided relocating a few thousand
+          lines of existing, working JSX. */}
+      <div
+        className="flex-shrink-0 overflow-y-auto p-4"
+        style={{ order: 3, width: sidebarWidth, background: "#1c1a17", borderLeft: "1px solid #302d27" }}
+      >
         {activeSelection.kind === "box" && (
         <>
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
@@ -2636,17 +2663,19 @@ export default function PackageBoxMockup() {
 
       </div>
 
-      {/* drag handle: sidebar width */}
+      {/* drag handle: inspector width — see the ordering note on the inspector rail
+          above for why this sits at order:2 despite its source position */}
       <div
         onPointerDown={onSidebarHandleDown}
         onPointerMove={onSidebarHandleMove}
         onPointerUp={onSidebarHandleUp}
         onPointerLeave={onSidebarHandleUp}
-        style={{ width: "5px", flexShrink: 0, cursor: "col-resize", background: "#302d27", touchAction: "none" }}
+        style={{ order: 2, width: "5px", flexShrink: 0, cursor: "col-resize", background: "#302d27", touchAction: "none" }}
       />
 
-      {/* right column: 3D viewport + bottom bar, both drag-resizable */}
-      <div className="flex flex-col flex-1" style={{ minWidth: "260px" }}>
+      {/* center: 3D viewport (drag-resizable bottom bar lives outside this row now,
+          full-width, see below) */}
+      <div className="flex flex-col flex-1" style={{ order: 1, minWidth: "260px" }}>
         {/* main stage: pasteboard viewport with the render as a floating, resizable/
             zoomable/pannable artboard inside it — After Effects preview style */}
         <div
@@ -2744,7 +2773,15 @@ export default function PackageBoxMockup() {
             <span style={{ color: "#7d7568" }}>px</span>
           </div>
         </div>
+      </div>
+      {/* end center viewport column */}
 
+      </div>
+      {/* end main row (outliner / viewport / inspector) */}
+
+      {/* bottom asset drawer — full width, below the whole 3-column row (not just
+          under the viewport), matching the redesign mockup */}
+      <div className="flex-shrink-0 flex flex-col">
         {/* drag handle: bottom bar height (only meaningful while the drawer is open) */}
         {!bottomBarCollapsed && (
           <div
