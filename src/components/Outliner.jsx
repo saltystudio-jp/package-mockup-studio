@@ -17,6 +17,10 @@ const TYPE_DOT_STYLE = {
 // convention as a typical layers panel) — so selecting/adding/removing/duplicating any
 // placed object works the same way regardless of its kind, and where something sits in
 // the stacking order (see the ground-snap/layer resolver) is visible at a glance.
+//
+// Fills its whole column (h-full) rather than capping its own list at a small fixed
+// height — it lives alone in a dedicated column now, so there's no reason to make it
+// scroll internally after ~6 rows while the rest of that column sits empty below it.
 export default function Outliner({ boxInstances, cardInstances, pieceInstances, activeSelection, onSelect, onAdd, onDuplicate, onRemove }) {
   const [addMenuOpen, setAddMenuOpen] = useState(false);
 
@@ -29,8 +33,8 @@ export default function Outliner({ boxInstances, cardInstances, pieceInstances, 
   const canRemove = (kind) => kind !== "box" || boxInstances.length > 1;
 
   return (
-    <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
-      <div className="flex items-center justify-between mb-2">
+    <div className="h-full flex flex-col rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
+      <div className="flex items-center justify-between mb-2 flex-shrink-0">
         <div className="text-xs uppercase" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
           レイヤー(配置したオブジェクト)
         </div>
@@ -77,14 +81,14 @@ export default function Outliner({ boxInstances, cardInstances, pieceInstances, 
         </div>
       </div>
 
-      <div className="flex flex-col gap-1" style={{ maxHeight: "220px", overflowY: "auto" }}>
+      <div className="flex flex-col gap-1 flex-1 min-h-0 overflow-y-auto">
         {rows.map((row) => {
           const selected = activeSelection?.kind === row.kind && activeSelection?.id === row.id;
           return (
             <div
               key={`${row.kind}:${row.id}`}
               onClick={() => onSelect(row.kind, row.id)}
-              className="flex items-center gap-2 rounded px-2 py-1.5 cursor-pointer text-xs"
+              className="flex items-center gap-2 rounded px-2 py-2 cursor-pointer text-xs flex-shrink-0"
               style={{
                 background: selected ? "#332e26" : "transparent",
                 border: `1px solid ${selected ? "#5fd3d9" : "transparent"}`,
@@ -118,8 +122,8 @@ export default function Outliner({ boxInstances, cardInstances, pieceInstances, 
           );
         })}
       </div>
-      <p className="text-xs mt-2" style={{ color: "#7d7568" }}>
-        クリックで選択(下のインスペクターに反映)。レイヤー番号が大きいほど上に乗ります。
+      <p className="text-xs mt-2 flex-shrink-0" style={{ color: "#7d7568" }}>
+        クリックで選択(右のインスペクターに反映)。レイヤー番号が大きいほど上に乗ります。
       </p>
     </div>
   );

@@ -936,7 +936,11 @@ export default function PackageBoxMockup() {
       if (t.objectDrag?.mode === "rotate") {
         const d = t.objectDrag;
         const currentAngle = Math.atan2(e.clientY - d.centerScreen.y, e.clientX - d.centerScreen.x);
-        const deltaDeg = ((currentAngle - d.startAngle) * 180) / Math.PI;
+        // negated: screen Y grows downward while rotY's positive direction (right-hand
+        // rule around world +Y, viewed from the camera looking down at the scene from
+        // above) reads as clockwise-on-screen — without the flip, dragging clockwise
+        // around the object visually spun it counter-clockwise.
+        const deltaDeg = -((currentAngle - d.startAngle) * 180) / Math.PI;
         if (!d.moved && Math.abs(deltaDeg) > 2) d.moved = true;
         if (!d.moved) return;
         const nextRotY = ((d.startRotY + deltaDeg) % 360 + 360) % 360;
@@ -2277,14 +2281,26 @@ export default function PackageBoxMockup() {
         <h1 className="text-base" style={{ fontFamily: "Fraunces, serif", fontWeight: 600, color: "#f4ede0" }}>
           化粧箱プレビュー
         </h1>
+        <div className="flex-1" />
+        <button
+          onClick={exportRender}
+          disabled={exporting}
+          className="text-sm rounded px-4 py-1.5"
+          style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
+          title="現在の書き出し設定(解像度・透過)でPNGを書き出します。詳細設定はアセット引き出し内にあります。"
+        >
+          {exporting ? "書き出し中…" : "書き出し"}
+        </button>
       </div>
 
       {/* main row: outliner (left) / viewport (center) / inspector (right, resizable) */}
       <div className="flex flex-1 min-h-0">
 
-      {/* outliner rail — fixed width, left */}
+      {/* outliner rail — fixed width, left. Flex column filling the full row height so
+          the Outliner's own list can flex to fill it, instead of scrolling internally
+          after only a handful of rows while the rest of the column sits empty. */}
       <div
-        className="flex-shrink-0 overflow-y-auto p-3"
+        className="flex-shrink-0 flex flex-col p-3"
         style={{ order: 0, width: "260px", background: "#1c1a17", borderRight: "1px solid #302d27" }}
       >
         <Outliner
@@ -2831,54 +2847,65 @@ export default function PackageBoxMockup() {
           bodyGuideCanvasRef
         )}
 
-        {imageUploadPanel(
-          "蓋(フタ)側の展開図画像",
-          lidImg,
-          lidFileName,
-          handleLidFile,
-          handleLidPaste,
-          lidTransform,
-          setLidTransform,
-          downloadLidGuide,
-          () => {
-            if (!lidImg) return;
-            const layout = rawSpaceLayout(netLayout(bodyW + clearance * 2, bodyD + clearance * 2, lidH, "lid"), LID_ORIENT);
-            setCropEditor({
-              img: orientedImage(lidImg, lidTransform),
-              aspectW: layout.totalW,
-              aspectH: layout.totalH,
-              regions: layout.regions,
-              initialCrop: lidTransform,
-              setTransform: setLidTransform,
-            });
-          },
-          lidGuideCanvasRef
-        )}
+        {/* 蓋の外側(展開図)と内側は同じ物理パーツの表裏なので、1セットとして並べて表示 */}
+        <div
+          className="flex-shrink-0 rounded-lg p-2 flex flex-col"
+          style={{ background: "#1c1a17", border: "1px solid #4a3f2f", height: "100%" }}
+        >
+          <div className="text-xs uppercase mb-2 flex-shrink-0 px-1" style={{ color: "#c9a15a", letterSpacing: "0.08em" }}>
+            蓋セット(外側+内側)
+          </div>
+          <div className="flex gap-2 flex-1 min-h-0">
+            {imageUploadPanel(
+              "外側(展開図)",
+              lidImg,
+              lidFileName,
+              handleLidFile,
+              handleLidPaste,
+              lidTransform,
+              setLidTransform,
+              downloadLidGuide,
+              () => {
+                if (!lidImg) return;
+                const layout = rawSpaceLayout(netLayout(bodyW + clearance * 2, bodyD + clearance * 2, lidH, "lid"), LID_ORIENT);
+                setCropEditor({
+                  img: orientedImage(lidImg, lidTransform),
+                  aspectW: layout.totalW,
+                  aspectH: layout.totalH,
+                  regions: layout.regions,
+                  initialCrop: lidTransform,
+                  setTransform: setLidTransform,
+                });
+              },
+              lidGuideCanvasRef
+            )}
 
-        {imageUploadPanel(
-          "蓋・裏面(内側)の画像",
-          lidInnerImg,
-          lidInnerFileName,
-          handleLidInnerFile,
-          handleLidInnerPaste,
-          lidInnerTransform,
-          setLidInnerTransform,
-          downloadLidInnerGuide,
-          () => {
-            if (!lidInnerImg) return;
-            const lidWmm = bodyW + clearance * 2;
-            const lidDmm = bodyD + clearance * 2;
-            setCropEditor({
-              img: orientedImage(lidInnerImg, lidInnerTransform),
-              aspectW: lidWmm,
-              aspectH: lidDmm,
-              regions: [{ key: "lid-inner", x: 0, y: 0, w: lidWmm, h: lidDmm, rotate: 0 }],
-              initialCrop: lidInnerTransform,
-              setTransform: setLidInnerTransform,
-            });
-          },
-          lidInnerGuideCanvasRef
-        )}
+            {imageUploadPanel(
+              "内側",
+              lidInnerImg,
+              lidInnerFileName,
+              handleLidInnerFile,
+              handleLidInnerPaste,
+              lidInnerTransform,
+              setLidInnerTransform,
+              downloadLidInnerGuide,
+              () => {
+                if (!lidInnerImg) return;
+                const lidWmm = bodyW + clearance * 2;
+                const lidDmm = bodyD + clearance * 2;
+                setCropEditor({
+                  img: orientedImage(lidInnerImg, lidInnerTransform),
+                  aspectW: lidWmm,
+                  aspectH: lidDmm,
+                  regions: [{ key: "lid-inner", x: 0, y: 0, w: lidWmm, h: lidDmm, rotate: 0 }],
+                  initialCrop: lidInnerTransform,
+                  setTransform: setLidInnerTransform,
+                });
+              },
+              lidInnerGuideCanvasRef
+            )}
+          </div>
+        </div>
 
         <SymbolLibraryPanel
           symbols={symbols}
