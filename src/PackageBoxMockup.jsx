@@ -3,7 +3,10 @@ import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
 import CardPanel from "./components/CardPanel.jsx";
+import PiecePanel from "./components/PiecePanel.jsx";
 import SymbolLibraryPanel from "./components/SymbolLibraryPanel.jsx";
+import PieceShapeLibraryPanel from "./components/PieceShapeLibraryPanel.jsx";
+import { PIECE_SHAPE_KINDS, buildPresetShape, buildExtrudedPieceGeometry } from "./lib/shapes2d.js";
 import {
   imgW,
   imgH,
@@ -442,6 +445,29 @@ export default function PackageBoxMockup() {
   const [selectedCardId, setSelectedCardId] = useState(null);
   const nextCardIdRef = useRef(1);
 
+  // ---- pieces (駒): unlike the box/card (one shared design for every copy), a scene
+  // typically has several DIFFERENT piece types (pawn vs king, say) — so shape is its
+  // own small reusable library (mirroring the symbol library's "define once, reference
+  // from instances" pattern) instead of one global piece design. Each piece instance
+  // then picks both a shape def (geometry) and a symbol (top-face image + body color). ----
+  const DEFAULT_PIECE_SHAPE_DEF = { kind: "circle", w: 25, d: 25, thickness: 8, cornerFrac: 0.18 };
+  const [pieceShapeDefs, setPieceShapeDefs] = useState([]);
+  const nextPieceShapeIdRef = useRef(1);
+  const nextPieceShapeNumRef = useRef(1);
+  const DEFAULT_PIECE_INSTANCE = {
+    x: 0,
+    z: 0,
+    rotY: 0,
+    tiltX: 0,
+    tiltZ: 0,
+    shapeDefId: null,
+    symbolId: null,
+    floatHeight: 0,
+  };
+  const [pieceInstances, setPieceInstances] = useState([]);
+  const [selectedPieceId, setSelectedPieceId] = useState(null);
+  const nextPieceIdRef = useRef(1);
+
   const mountRef = useRef(null);
   const viewportRef = useRef(null);
   const artboardRef = useRef(null);
@@ -646,6 +672,46 @@ export default function PackageBoxMockup() {
     };
     t.syncCardInstances = syncCardInstances;
 
+    // pieces: geometry is shared PER SHAPE DEF (not one single shared geometry like the
+    // box, since different piece instances can reference different shape defs), and
+    // materials are per-instance like cards (3 slots: bottom/top/side — see
+    // splitCapGroups in shapes2d.js for why extruded geometry needs a custom 3-way
+    // split instead of BoxGeometry's built-in 6 face groups).
+    const allPiecesGroup = new THREE.Group();
+    scene.add(allPiecesGroup);
+    const pieceShapeGeos = {};
+    const pieceInstancesTHREE = {};
+    const syncPieceInstances = (pieces) => {
+      const idSet = new Set(pieces.map((p) => p.id));
+      Object.keys(pieceInstancesTHREE).forEach((key) => {
+        if (idSet.has(Number(key))) return;
+        const rec = pieceInstancesTHREE[key];
+        rec.mats.forEach((m) => {
+          if (m.map) m.map.dispose();
+          m.dispose();
+        });
+        allPiecesGroup.remove(rec.group);
+        delete pieceInstancesTHREE[key];
+      });
+      pieces.forEach(({ id, shapeDefId }) => {
+        if (pieceInstancesTHREE[id]) {
+          pieceInstancesTHREE[id].mesh.geometry = pieceShapeGeos[shapeDefId] || pieceInstancesTHREE[id].mesh.geometry;
+          return;
+        }
+        const mats = Array.from({ length: 3 }, () => makeFaceMaterial());
+        const geo = pieceShapeGeos[shapeDefId];
+        const mesh = new THREE.Mesh(geo, mats);
+        mesh.castShadow = true;
+        mesh.receiveShadow = true;
+        mesh.userData = { kind: "piece", instanceId: id };
+        const group = new THREE.Group();
+        group.add(mesh);
+        allPiecesGroup.add(group);
+        pieceInstancesTHREE[id] = { group, mesh, mats };
+      });
+    };
+    t.syncPieceInstances = syncPieceInstances;
+
     t.scene = scene;
     t.camera = camera;
     t.renderer = renderer;
@@ -659,6 +725,9 @@ export default function PackageBoxMockup() {
     t.allCardsGroup = allCardsGroup;
     t.cardGeo = cardGeo;
     t.cardInstancesTHREE = cardInstancesTHREE;
+    t.allPiecesGroup = allPiecesGroup;
+    t.pieceShapeGeos = pieceShapeGeos;
+    t.pieceInstancesTHREE = pieceInstancesTHREE;
 
     const raycaster = new THREE.Raycaster();
     const pointerNdc = new THREE.Vector2();
@@ -902,6 +971,30 @@ export default function PackageBoxMockup() {
     });
   }, [cardW, cardD, cardThickness, cardCornerRadius]);
 
+  // ---- rebuild each piece SHAPE DEF's own geometry when its kind/dims/corner fraction
+  // change. Reassigning that geometry to whichever piece instances currently reference
+  // it happens in the combined placement effect below (it reads t.pieceShapeGeos fresh
+  // every pass), not here — this effect only owns the geometry cache itself. ----
+  useEffect(() => {
+    const t = three.current;
+    if (!t.pieceShapeGeos) return;
+    const liveIds = new Set(pieceShapeDefs.map((d) => d.id));
+    Object.keys(t.pieceShapeGeos).forEach((key) => {
+      if (liveIds.has(Number(key))) return;
+      t.pieceShapeGeos[key].dispose();
+      delete t.pieceShapeGeos[key];
+    });
+    pieceShapeDefs.forEach((def) => {
+      t.pieceShapeGeos[def.id]?.dispose();
+      const shape = buildPresetShape(def.kind, def.cornerFrac);
+      t.pieceShapeGeos[def.id] = buildExtrudedPieceGeometry(shape, {
+        widthUnits: def.w * SCALE,
+        depthUnits: def.d * SCALE,
+        thicknessUnits: def.thickness * SCALE,
+      });
+    });
+  }, [pieceShapeDefs]);
+
   // ---- add/remove box AND card instances to match state, and place each one per its
   // own position/rotation/tilt/orientation/floatHeight. Combined into one effect (rather
   // than a separate one per object kind) because camera framing/shadow fitting below
@@ -952,8 +1045,24 @@ export default function PackageBoxMockup() {
       rec.group.position.y = groundSnapY(rec.group, data.floatHeight || 0, SCALE);
     });
 
+    // pieces only have a mesh worth positioning once their shape def actually exists
+    // (a piece can be added before any shape def is defined, e.g. mid-edit) — those
+    // without a resolvable geometry are just left at their synced default pose until
+    // a shape def is assigned.
+    const placeablePieces = pieceInstances.filter((p) => t.pieceShapeGeos[p.shapeDefId]);
+    t.syncPieceInstances?.(placeablePieces);
+    placeablePieces.forEach((data) => {
+      const rec = t.pieceInstancesTHREE[data.id];
+      if (!rec) return;
+      rec.mesh.geometry = t.pieceShapeGeos[data.shapeDefId];
+      rec.group.quaternion.copy(composePlacementQuaternion({ ...data, orientation: "lying" }));
+      rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
+      rec.group.position.y = groundSnapY(rec.group, data.floatHeight || 0, SCALE);
+    });
+
     const fullBox = new THREE.Box3().setFromObject(t.allBoxesGroup);
     if (t.allCardsGroup && cardInstances.length) fullBox.union(new THREE.Box3().setFromObject(t.allCardsGroup));
+    if (t.allPiecesGroup && placeablePieces.length) fullBox.union(new THREE.Box3().setFromObject(t.allPiecesGroup));
     t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
     t.fullBox = fullBox;
     fitShadowToBox(t);
@@ -975,7 +1084,23 @@ export default function PackageBoxMockup() {
       }
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boxInstances, bodyW, bodyD, bodyH, lidH, clearance, bevelRadius, selectedBoxId, cardInstances, cardW, cardD, cardThickness, cardCornerRadius]);
+  }, [
+    boxInstances,
+    bodyW,
+    bodyD,
+    bodyH,
+    lidH,
+    clearance,
+    bevelRadius,
+    selectedBoxId,
+    cardInstances,
+    cardW,
+    cardD,
+    cardThickness,
+    cardCornerRadius,
+    pieceInstances,
+    pieceShapeDefs,
+  ]);
 
   // ---- rebuild each card instance's OWN materials (front face = its symbol's image,
   // cover-fit via UV repeat/offset so it never distorts; the other 5 faces = the
@@ -1020,6 +1145,46 @@ export default function PackageBoxMockup() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cardSymbolAssignmentKey, symbols, cardW, cardD]);
 
+  // ---- same idea as the card texture effect above, but for pieces: the symbol's image
+  // goes on the TOP cap only (materialIndex 1 — see splitCapGroups in shapes2d.js), the
+  // bottom cap + sides (materialIndex 0/2) get the symbol's plain tint color. Cover-fit
+  // aspect comes from the piece's OWN shape def (W/D), not the card's. ----
+  const pieceSymbolAssignmentKey = pieceInstances.map((p) => `${p.id}:${p.shapeDefId ?? ""}:${p.symbolId ?? ""}`).join("|");
+  useEffect(() => {
+    const t = three.current;
+    if (!t.pieceInstancesTHREE) return;
+    const shapeDefById = new Map(pieceShapeDefs.map((d) => [d.id, d]));
+    pieceInstances.forEach((inst) => {
+      const rec = t.pieceInstancesTHREE[inst.id];
+      if (!rec) return;
+      const def = shapeDefById.get(inst.shapeDefId);
+      const faceAspect = def ? def.w / def.d : 1;
+      const symbol = symbols.find((s) => s.id === inst.symbolId) || null;
+      const canvas = buildSymbolFaceCanvas(symbol);
+      const tex = new THREE.CanvasTexture(canvas);
+      tex.encoding = THREE.sRGBEncoding;
+      const texAspect = symbol?.img ? symbolAspect(symbol) : 1;
+      const { repeat, offset } = coverFitRepeatOffset(texAspect, faceAspect);
+      tex.repeat.set(repeat[0], repeat[1]);
+      tex.offset.set(offset[0], offset[1]);
+      tex.needsUpdate = true;
+
+      const bodyColor = new THREE.Color(symbol?.color || DEFAULT_SYMBOL_COLOR);
+      rec.mats.forEach((m, i) => {
+        if (m.map) m.map.dispose();
+        if (i === 1) {
+          m.map = tex;
+          m.color.set(0xffffff);
+        } else {
+          m.map = null;
+          m.color.copy(bodyColor);
+        }
+        m.needsUpdate = true;
+      });
+    });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [pieceSymbolAssignmentKey, symbols, pieceShapeDefs]);
+
   // ---- when a box/card is added OR moved further out, nudge the orbit camera out if
   // needed so the arrangement still fits in view — never nudges IN, so it never fights a
   // manual zoom the user made. t.shadowRadius is recomputed from the combined box+card
@@ -1050,7 +1215,7 @@ export default function PackageBoxMockup() {
       neededCameraDistRef.current = neededDist;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boxInstances, cardInstances]);
+  }, [boxInstances, cardInstances, pieceInstances, pieceShapeDefs]);
 
   // ---- ground visibility ----
   useEffect(() => {
@@ -1732,6 +1897,46 @@ export default function PackageBoxMockup() {
     setCardInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...patch } : c)));
   };
 
+  // ---- piece shape library management ----
+  const addPieceShapeDef = () => {
+    const id = nextPieceShapeIdRef.current++;
+    const num = nextPieceShapeNumRef.current++;
+    setPieceShapeDefs((prev) => [...prev, { id, name: `形状 ${num}`, ...DEFAULT_PIECE_SHAPE_DEF }]);
+    return id;
+  };
+  const updatePieceShapeDef = (id, patch) => {
+    setPieceShapeDefs((prev) => prev.map((d) => (d.id === id ? { ...d, ...patch } : d)));
+  };
+  const removePieceShapeDef = (id) => setPieceShapeDefs((prev) => prev.filter((d) => d.id !== id));
+
+  // ---- piece instance management ----
+  const addPieceInstance = () => {
+    const id = nextPieceIdRef.current++;
+    // pieces need a shape def to have any geometry — auto-create one on first use so
+    // the user isn't forced to visit the shape library before placing anything.
+    const shapeDefId = pieceShapeDefs[0]?.id ?? addPieceShapeDef();
+    const spacing = 40;
+    setPieceInstances((prev) => [...prev, { id, ...DEFAULT_PIECE_INSTANCE, shapeDefId, x: prev.length * spacing }]);
+    setSelectedPieceId(id);
+  };
+  const duplicatePieceInstance = (sourceId) => {
+    const source = pieceInstances.find((p) => p.id === sourceId);
+    if (!source) return;
+    const id = nextPieceIdRef.current++;
+    setPieceInstances((prev) => [...prev, { ...source, id, x: source.x + 40 }]);
+    setSelectedPieceId(id);
+  };
+  const removePieceInstance = (id) => {
+    setPieceInstances((prev) => {
+      const remaining = prev.filter((p) => p.id !== id);
+      if (selectedPieceId === id) setSelectedPieceId(remaining[0]?.id ?? null);
+      return remaining;
+    });
+  };
+  const updatePieceInstance = (id, patch) => {
+    setPieceInstances((prev) => prev.map((p) => (p.id === id ? { ...p, ...patch } : p)));
+  };
+
   // small "連動" (linked) badge-button shown next to a per-instance control's label —
   // only meaningful for boxes 2+, toggles whether that one param follows box1.
   const linkToggle = (key) => {
@@ -2127,6 +2332,18 @@ export default function PackageBoxMockup() {
           onDuplicate={duplicateCardInstance}
           onRemove={removeCardInstance}
           onUpdate={updateCardInstance}
+        />
+
+        <PiecePanel
+          shapeDefs={pieceShapeDefs}
+          symbols={symbols}
+          pieceInstances={pieceInstances}
+          selectedPieceId={selectedPieceId}
+          setSelectedPieceId={setSelectedPieceId}
+          onAdd={addPieceInstance}
+          onDuplicate={duplicatePieceInstance}
+          onRemove={removePieceInstance}
+          onUpdate={updatePieceInstance}
         />
 
         <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
@@ -2619,6 +2836,13 @@ export default function PackageBoxMockup() {
           onOpenCropEditor={openSymbolCropEditor}
           onRemoveSymbol={removeSymbol}
           onAutoRoundFromAlpha={autoDetectCornerRadiusFromSymbol}
+        />
+
+        <PieceShapeLibraryPanel
+          shapeDefs={pieceShapeDefs}
+          onAdd={addPieceShapeDef}
+          onUpdate={updatePieceShapeDef}
+          onRemove={removePieceShapeDef}
         />
 
         {exportSettingsCard}
