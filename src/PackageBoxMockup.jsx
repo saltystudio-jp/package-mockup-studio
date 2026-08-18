@@ -270,6 +270,10 @@ function fitShadowToBox(t) {
   const radius = Math.max(0.3, Math.max(size.x, size.y, size.z) * 0.5 * Math.SQRT2 + 0.15);
   t.shadowRadius = radius;
 
+  // move the light+target TOGETHER (position = target + the fixed offset the
+  // azimuth/elevation sliders computed) so re-centering the target on the current
+  // content never changes the light's actual direction — see t.lightOffset above.
+  if (t.lightOffset) t.key.position.copy(boxCenter).add(t.lightOffset);
   t.key.target.position.copy(boxCenter);
   t.key.target.updateMatrixWorld();
 
@@ -837,27 +841,38 @@ export default function PackageBoxMockup() {
       if (e.button === 1) {
         t.panning = true;
         e.preventDefault();
-      } else if (e.button === 0) {
+      } else if (e.button === 0 || e.button === 2) {
         const hit = pickInstanceAt(e.clientX, e.clientY);
         if (hit) {
           // select immediately on mousedown (standard editor behavior: mousedown
-          // selects, a subsequent drag moves the now-selected object) — this is what
-          // lets a single press-drag gesture both pick AND move an unselected object.
+          // selects, a subsequent drag moves/rotates the now-selected object) — this
+          // is what lets a single press-drag gesture both pick AND act on an
+          // unselected object in one motion.
           selectObject(hit.kind, hit.id);
           const current = instancesRefByKind[hit.kind].current.find((o) => o.id === hit.id);
-          const startGround = groundPointAt(e.clientX, e.clientY);
-          if (current && startGround) {
-            t.objectDrag = {
-              kind: hit.kind,
-              id: hit.id,
-              startX: current.x,
-              startZ: current.z,
-              startGroundX: startGround.x,
-              startGroundZ: startGround.z,
-              moved: false,
-            };
+          if (e.button === 2) {
+            // right-drag rotates around world-up (Y) — suppress the native context
+            // menu that would otherwise pop up on release; see onContextMenu below.
+            t.suppressNextContextMenu = true;
+            if (current) {
+              t.objectDrag = { mode: "rotate", kind: hit.kind, id: hit.id, startX: e.clientX, startRotY: current.rotY || 0, moved: false };
+            }
+          } else {
+            const startGround = groundPointAt(e.clientX, e.clientY);
+            if (current && startGround) {
+              t.objectDrag = {
+                mode: "move",
+                kind: hit.kind,
+                id: hit.id,
+                startX: current.x,
+                startZ: current.z,
+                startGroundX: startGround.x,
+                startGroundZ: startGround.z,
+                moved: false,
+              };
+            }
           }
-        } else {
+        } else if (e.button === 0) {
           t.dragging = true;
         }
       }
@@ -881,7 +896,17 @@ export default function PackageBoxMockup() {
         return;
       }
 
-      if (t.objectDrag) {
+      if (t.objectDrag?.mode === "rotate") {
+        const d = t.objectDrag;
+        const totalDx = e.clientX - d.startX;
+        if (!d.moved && Math.abs(totalDx) > 2) d.moved = true;
+        if (!d.moved) return;
+        const nextRotY = ((d.startRotY + totalDx * 0.5) % 360 + 360) % 360;
+        setInstancesByKind[d.kind]((prev) => prev.map((o) => (o.id === d.id ? { ...o, rotY: nextRotY } : o)));
+        return;
+      }
+
+      if (t.objectDrag?.mode === "move") {
         const ground = groundPointAt(e.clientX, e.clientY);
         if (!ground) return;
         const d = t.objectDrag;
@@ -911,7 +936,10 @@ export default function PackageBoxMockup() {
       t.radius = Math.min(40, Math.max(0.4, t.radius * (1 + e.deltaY * 0.001)));
     };
     const onContextMenu = (e) => {
-      if (t.panning) e.preventDefault();
+      if (t.panning || t.suppressNextContextMenu) {
+        e.preventDefault();
+        t.suppressNextContextMenu = false;
+      }
     };
 
     renderer.domElement.addEventListener("pointerdown", onPointerDown);
@@ -1393,7 +1421,15 @@ export default function PackageBoxMockup() {
     const az = (lightAzimuth * Math.PI) / 180;
     const el = (lightElevation * Math.PI) / 180;
     const dist = 5.8;
-    t.key.position.set(
+    // stored as an OFFSET (light position relative to its target), not a fixed world
+    // position — fitShadowToBox re-applies this same offset around wherever the
+    // scene's bounding box currently is, so moving/dragging an object (which shifts
+    // that bounding box) can't change the light's actual DIRECTION, only where its
+    // target re-centers. Anchoring position to a fixed world point instead would let
+    // direction drift as soon as the target (which does need to track content, for
+    // shadow coverage) moved away from that point — same bug class as the camera
+    // fix above, just for the light instead of the viewer.
+    t.lightOffset = new THREE.Vector3(
       dist * Math.sin(az) * Math.cos(el),
       dist * Math.sin(el),
       dist * Math.cos(az) * Math.cos(el)
@@ -2638,7 +2674,7 @@ export default function PackageBoxMockup() {
             className="absolute top-3 left-3 text-xs px-2 py-1 rounded"
             style={{ background: "rgba(28,26,23,0.85)", color: "#9c968a", pointerEvents: "none" }}
           >
-            オブジェクトをクリック:選択 / ドラッグ:移動 / それ以外をドラッグ:回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
+            オブジェクトをクリック:選択 / ドラッグ:移動 / 右クリックドラッグ:選択物を回転 / それ以外をドラッグ:視点回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
           </div>
 
           <button
