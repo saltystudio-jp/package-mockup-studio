@@ -2066,6 +2066,22 @@ export default function PackageBoxMockup() {
         *::-webkit-scrollbar-thumb:hover {
           background-color: #5c584a;
         }
+        /* one rule instead of touching every button's own style: every plain
+           <button> (and file-upload trigger built from a <label
+           className="...cursor-pointer">, same visual role) brightens on hover so
+           the whole UI reads as interactive, not just the handful of controls with
+           bespoke hover states (ScrubField, Outliner rows, custom dropdown items —
+           all plain <div>s, so this doesn't touch or fight those). Excludes
+           disabled buttons. */
+        button:not(:disabled), label.cursor-pointer {
+          transition: filter 100ms ease;
+        }
+        button:not(:disabled):hover, label.cursor-pointer:hover {
+          filter: brightness(1.12);
+        }
+        button:not(:disabled):active, label.cursor-pointer:active {
+          filter: brightness(0.96);
+        }
       `}</style>
 
       {/* top toolbar — thin, full width */}
