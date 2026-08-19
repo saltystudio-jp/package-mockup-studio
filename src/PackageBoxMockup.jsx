@@ -2073,11 +2073,12 @@ export default function PackageBoxMockup() {
         className="flex-shrink-0 flex items-center gap-3 px-4"
         style={{ height: "48px", background: "#1c1a17", borderBottom: "1px solid #302d27" }}
       >
-        <div className="text-xs tracking-widest uppercase" style={{ color: "#e2432a", letterSpacing: "0.15em" }}>
-          Package Mockup Studio
-        </div>
-        <h1 className="text-base" style={{ fontFamily: "Fraunces, serif", fontWeight: 600, color: "#f4ede0" }}>
-          化粧箱プレビュー
+        <h1
+          className="text-base flex-shrink-0"
+          style={{ fontFamily: "Fraunces, serif", fontWeight: 600, color: "#f4ede0" }}
+          title="化粧箱・カード・駒のモックアップスタジオ"
+        >
+          Package Mockup Studio<span style={{ color: "#e2432a" }}>.</span>
         </h1>
         <div className="flex-1" />
         <button

@@ -6,6 +6,47 @@ const TYPE_DOT_STYLE = {
   component: { background: "#5fd3d9", borderRadius: "50%" },
 };
 
+function OutlinerRow({ row, selected, onSelect, onRemove, canRemove }) {
+  const [hover, setHover] = useState(false);
+  return (
+    <div
+      onClick={() => onSelect(row.kind, row.id)}
+      onMouseEnter={() => setHover(true)}
+      onMouseLeave={() => setHover(false)}
+      className="flex items-center gap-2 rounded px-2 py-2 cursor-pointer text-xs flex-shrink-0"
+      style={{
+        background: selected ? "#332e26" : hover ? "#2b2822" : "transparent",
+        border: `1px solid ${selected ? "#5fd3d9" : "transparent"}`,
+      }}
+    >
+      <span style={{ width: "9px", height: "9px", flexShrink: 0, ...TYPE_DOT_STYLE[row.kind] }} />
+      <span className="flex-1" style={{ color: selected ? "#efe6d4" : "#c9c2b4", fontWeight: selected ? 600 : 400 }}>
+        {row.name}
+      </span>
+      <span
+        className="rounded px-1"
+        style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "10px", color: "#7d7568", background: "#1c1a17", border: "1px solid #3a372f" }}
+        title="レイヤー"
+      >
+        L{row.layer}
+      </span>
+      {canRemove && (
+        <span
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(row.kind, row.id);
+          }}
+          className="rounded-full flex items-center justify-center flex-shrink-0"
+          style={{ width: "16px", height: "16px", background: "rgba(0,0,0,0.3)", fontSize: "11px", lineHeight: 1, color: "#a89f8f" }}
+          title="削除"
+        >
+          ×
+        </span>
+      )}
+    </div>
+  );
+}
+
 // unified layers panel: box/card/piece used to each have their own independent
 // "配置(N数)" chip list (add/duplicate/remove/select), duplicating the same UI pattern
 // three times and giving the user three separate places to learn. This merges them
@@ -82,40 +123,14 @@ export default function Outliner({ boxInstances, componentInstances, activeSelec
         {rows.map((row) => {
           const selected = activeSelection?.kind === row.kind && activeSelection?.id === row.id;
           return (
-            <div
+            <OutlinerRow
               key={`${row.kind}:${row.id}`}
-              onClick={() => onSelect(row.kind, row.id)}
-              className="flex items-center gap-2 rounded px-2 py-2 cursor-pointer text-xs flex-shrink-0"
-              style={{
-                background: selected ? "#332e26" : "transparent",
-                border: `1px solid ${selected ? "#5fd3d9" : "transparent"}`,
-              }}
-            >
-              <span style={{ width: "9px", height: "9px", flexShrink: 0, ...TYPE_DOT_STYLE[row.kind] }} />
-              <span className="flex-1" style={{ color: selected ? "#efe6d4" : "#c9c2b4", fontWeight: selected ? 600 : 400 }}>
-                {row.name}
-              </span>
-              <span
-                className="rounded px-1"
-                style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "10px", color: "#7d7568", background: "#1c1a17", border: "1px solid #3a372f" }}
-                title="レイヤー"
-              >
-                L{row.layer}
-              </span>
-              {canRemove(row.kind) && (
-                <span
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onRemove(row.kind, row.id);
-                  }}
-                  className="rounded-full flex items-center justify-center flex-shrink-0"
-                  style={{ width: "16px", height: "16px", background: "rgba(0,0,0,0.3)", fontSize: "11px", lineHeight: 1, color: "#a89f8f" }}
-                  title="削除"
-                >
-                  ×
-                </span>
-              )}
-            </div>
+              row={row}
+              selected={selected}
+              onSelect={onSelect}
+              onRemove={onRemove}
+              canRemove={canRemove(row.kind)}
+            />
           );
         })}
       </div>

@@ -24,6 +24,7 @@ export default function ScrubField({
 }) {
   const dec = decimals ?? (step < 1 ? 2 : 0);
   const [dragging, setDragging] = useState(false);
+  const [hovering, setHovering] = useState(false);
   const [editing, setEditing] = useState(false);
   const [editValue, setEditValue] = useState("");
   const dragRef = useRef(null);
@@ -35,6 +36,10 @@ export default function ScrubField({
     return Math.round(v * factor) / factor;
   };
   const display = round(value).toFixed(dec);
+  // how far along min..max the current value sits — drives the fill bar, purely a
+  // visual "you are here" cue (like a mini slider track baked into the field itself),
+  // not an interactive element of its own.
+  const fillFrac = max > min ? Math.max(0, Math.min(1, (clamp(value) - min) / (max - min))) : 0;
 
   const onPointerDown = (e) => {
     if (editing) return;
@@ -83,7 +88,9 @@ export default function ScrubField({
         onPointerMove={onPointerMove}
         onPointerUp={finishDrag}
         onPointerCancel={finishDrag}
-        className="flex items-center gap-1 rounded px-2 py-1"
+        onMouseEnter={() => setHovering(true)}
+        onMouseLeave={() => setHovering(false)}
+        className="relative flex items-center gap-1 rounded px-2 py-1 overflow-hidden"
         style={{
           background: "#242220",
           border: `1px solid ${dragging || editing ? "#5fd3d9" : linked ? "#5fd3d9" : "#3a372f"}`,
@@ -93,6 +100,35 @@ export default function ScrubField({
           justifyContent: "flex-end",
         }}
       >
+        {/* fill bar: shows where the current value sits within min..max, brightens
+            while dragging so the gesture reads as "the field is lit up and moving" */}
+        <div
+          aria-hidden="true"
+          className="absolute inset-y-0 left-0"
+          style={{
+            width: `${fillFrac * 100}%`,
+            background: dragging ? "rgba(95,211,217,0.28)" : "rgba(95,211,217,0.14)",
+            transition: dragging ? "none" : "background-color 120ms ease",
+            pointerEvents: "none",
+          }}
+        />
+        {!editing && (
+          <span
+            aria-hidden="true"
+            className="relative"
+            style={{
+              fontFamily: "'JetBrains Mono', monospace",
+              fontSize: "10px",
+              letterSpacing: "-2px",
+              color: hovering || dragging ? "#5fd3d9" : "#5c584a",
+              opacity: hovering || dragging ? 1 : 0.6,
+              marginRight: "1px",
+              transition: "color 120ms ease, opacity 120ms ease",
+            }}
+          >
+            ‹›
+          </span>
+        )}
         {editing ? (
           <input
             ref={inputRef}
@@ -105,7 +141,7 @@ export default function ScrubField({
               if (e.key === "Enter") commitEdit();
               if (e.key === "Escape") setEditing(false);
             }}
-            className="no-spinner text-right"
+            className="no-spinner text-right relative"
             style={{
               width: "56px",
               background: "transparent",
@@ -118,6 +154,7 @@ export default function ScrubField({
           />
         ) : (
           <span
+            className="relative"
             style={{
               fontFamily: "'JetBrains Mono', monospace",
               fontSize: "13px",
@@ -129,7 +166,7 @@ export default function ScrubField({
           </span>
         )}
         {unit && (
-          <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", color: "#7d7568" }}>{unit}</span>
+          <span className="relative" style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "11px", color: "#7d7568" }}>{unit}</span>
         )}
       </div>
     </label>
