@@ -193,7 +193,9 @@ export function extractFaceCanvas(img, region, netTotalW, netTotalH, transform) 
   return canvas;
 }
 
-export function drawNetGuide(canvas, layoutLocal, img, transform, lineColor) {
+// `opts.maxPx` caps the canvas size (for on-screen thumbnails; the default is the
+// 300ppi print resolution)
+export function drawNetGuide(canvas, layoutLocal, img, transform, lineColor, opts) {
   // a literal color, never var(--token): this is a canvas (and a downloadable print
   // guide), and canvas 2D rejects CSS custom properties without any error
   const guideStroke = /^#/.test(lineColor || "") ? lineColor : DEFAULT_GUIDE_COLOR;
@@ -202,7 +204,7 @@ export function drawNetGuide(canvas, layoutLocal, img, transform, lineColor) {
   const MAX_DIM = 16000; // safety cap so only extreme box sizes fall back from true 300ppi (browser canvas limits)
   const naturalW = layoutLocal.totalW * TARGET_PX_PER_MM;
   const naturalH = layoutLocal.totalH * TARGET_PX_PER_MM;
-  const clamp = Math.min(1, MAX_DIM / Math.max(naturalW, naturalH));
+  const clamp = Math.min(1, (opts?.maxPx || MAX_DIM) / Math.max(naturalW, naturalH));
   const pxPerMm = TARGET_PX_PER_MM * clamp;
   const s = pxPerMm / 2.4; // scale visual guide elements (line widths, fonts) relative to original tuning
 

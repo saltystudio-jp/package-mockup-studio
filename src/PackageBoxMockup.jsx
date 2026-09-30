@@ -6,6 +6,7 @@ import Outliner from "./components/Outliner.jsx";
 import ComponentInstancePanel from "./components/ComponentInstancePanel.jsx";
 import LibraryPanel from "./components/LibraryPanel.jsx";
 import ObjectHeader from "./components/ObjectHeader.jsx";
+import NetLayoutEditor from "./components/NetLayoutEditor.jsx";
 import ToggleSwitch from "./components/ToggleSwitch.jsx";
 import Section from "./components/Section.jsx";
 import SegmentedControl from "./components/SegmentedControl.jsx";
@@ -29,11 +30,17 @@ import { buildComponentFaceCanvas } from "./lib/components.js";
 import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
 import { resolveStacking } from "./lib/stacking.js";
 import {
+  faceRegions,
+  faceRects,
+  defaultFaceLayout,
+  displayImage,
+  sliceFace,
+  rotateLayoutCW,
+  drawLayoutPreview,
+} from "./lib/netLayout.js";
+import {
   applyFaceTransform,
-  orientedImage,
-  orientedTransform,
   rawSpaceLayout,
-  extractFaceCanvas,
   drawNetGuide,
   DEFAULT_GUIDE_COLOR,
   FACE_LABELS,
@@ -1087,7 +1094,7 @@ export default function PackageBoxMockup() {
     ? [
         selectedBox.id,
         boxGeometryKey(selectedBox),
-        ...Object.entries(selectedBox.nets || {}).map(([k, v]) => `${k}:${imageKey(v?.img)}:${JSON.stringify(v?.transform)}`),
+        ...Object.entries(selectedBox.nets || {}).map(([k, v]) => `${k}:${imageKey(v?.img)}:${JSON.stringify(v?.transform)}:${JSON.stringify(v?.faceLayout)}`),
       ].join("|")
     : "";
   useEffect(() => {
@@ -1096,10 +1103,14 @@ export default function PackageBoxMockup() {
       const canvas = guideCanvasRefs.current[slot.key];
       if (!canvas || !canvas.isConnected) return;
       const net = selectedBox.nets?.[slot.key];
-      // raw (un-baselined) image + raw-space layout: the guide shows the user's own
-      // file as they made it, not the internally corrected copy used for slicing
-      const src = net?.img ? orientedImage(net.img, net.transform) : null;
-      drawNetGuide(canvas, rawSpaceLayout(slot.layout, slot.orient), src, net?.transform || DEFAULT_CROP, guideColor);
+      if (net?.img) {
+        // the user's own sheet, with where each face currently sits on it
+        const display = displayImage(net);
+        drawLayoutPreview(canvas, display, faceRects(slot, net, imgW(display), imgH(display)), guideColor);
+      } else {
+        // no sheet yet: the template, so it's clear which faces this box type needs
+        drawNetGuide(canvas, rawSpaceLayout(slot.layout, slot.orient), null, DEFAULT_CROP, guideColor, { maxPx: 480 });
+      }
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedBoxNetsKey, guideColor, guideMountTick]);
@@ -1120,7 +1131,7 @@ export default function PackageBoxMockup() {
         g: boxGeometryKey(box),
         nets: slots.map((s) => {
           const n = box.nets?.[s.key];
-          return [s.key, imageKey(n?.img), n?.transform];
+          return [s.key, imageKey(n?.img), n?.transform, n?.faceLayout];
         }),
         colorCorrection,
       });
@@ -1131,11 +1142,13 @@ export default function PackageBoxMockup() {
       slots.forEach((slot) => {
         const net = box.nets?.[slot.key];
         if (!net?.img) return;
-        const src = orientedImage(net.img, net.transform, slot.orient);
-        const transform = orientedTransform(net.transform, slot.orient);
+        // each face is cut from wherever its rectangle sits on the sheet (see
+        // netLayout.js) — not from a fixed template position
+        const display = displayImage(net);
+        const rects = faceRects(slot, net, imgW(display), imgH(display));
         slot.layout.regions.forEach((r) => {
-          if (r.face === false) return;
-          canvasByKey[r.key] = extractFaceCanvas(src, r, slot.layout.totalW, slot.layout.totalH, transform);
+          if (r.face === false || !rects[r.key]) return;
+          canvasByKey[r.key] = sliceFace(display, rects[r.key], slot.orient, r.rotate);
         });
       });
       Object.assign(canvasByKey, composeFaceCanvases(box, canvasByKey));
@@ -1187,43 +1200,28 @@ export default function PackageBoxMockup() {
       return { nets: { ...(b.nets || {}), [slotKey]: { ...current, ...patch } } };
     });
 
-  const downloadGuide = (box, slot) => {
-    const canvas = guideCanvasRefs.current[slot.key];
-    if (!canvas) return;
-    const a = document.createElement("a");
-    a.href = canvas.toDataURL("image/png");
-    a.download = `${BOX_TYPE_LABEL[box.boxType || "lidded"]}-${slot.label}-${box.w}x${box.d}x${box.h}mm.png`;
-    a.click();
-  };
-
   // everything the inspector's net slot UI can do to one sheet of one box. A re-upload
-  // keeps the existing trim: revised print files are usually exported from the same
-  // template, so the same crop still lines up.
+  // keeps the face layout: revised print files usually keep their arrangement, so the
+  // same rectangles still line up (it's stored relative to the image's size).
+  const [layoutEditor, setLayoutEditor] = useState(null); // { boxId, slotKey }
   const netSlotActions = (box, slot) => {
     const net = box.nets?.[slot.key];
-    const setTransform = (updater) =>
-      setBoxNet(box.id, slot.key, (cur) => ({
-        transform: typeof updater === "function" ? updater(cur.transform || DEFAULT_CROP) : updater,
-      }));
     return {
       net,
-      setTransform,
       onFile: (e) => readImageFile(e, (img, fileName) => setBoxNet(box.id, slot.key, { img, fileName })),
       onPaste: makePasteHandler((img) => setBoxNet(box.id, slot.key, { img, fileName: "(クリップボードから貼り付け)" })),
-      onClear: () => setBoxNet(box.id, slot.key, { img: null, fileName: "", transform: DEFAULT_CROP }),
-      onDownloadGuide: () => downloadGuide(box, slot),
-      onOpenEditor: () => {
-        if (!net?.img) return;
-        const raw = rawSpaceLayout(slot.layout, slot.orient);
-        setCropEditor({
-          img: orientedImage(net.img, net.transform),
-          aspectW: raw.totalW,
-          aspectH: raw.totalH,
-          regions: raw.regions,
-          initialCrop: net.transform || DEFAULT_CROP,
-          setTransform,
-        });
-      },
+      onClear: () => setBoxNet(box.id, slot.key, { img: null, fileName: "", transform: DEFAULT_CROP, faceLayout: null }),
+      onOpenLayout: () => net?.img && setLayoutEditor({ boxId: box.id, slotKey: slot.key }),
+      // a quarter turn of the sheet carries the placed faces round with it
+      onRotate: () =>
+        setBoxNet(box.id, slot.key, (cur) => {
+          const display = displayImage(cur);
+          const layout = cur.faceLayout || defaultFaceLayout(slot, cur, imgW(display), imgH(display));
+          return {
+            transform: { ...(cur.transform || DEFAULT_CROP), rotate: ((cur.transform?.rotate || 0) + 90) % 360 },
+            faceLayout: rotateLayoutCW(layout, imgW(display), imgH(display)),
+          };
+        }),
     };
   };
 
@@ -1310,7 +1308,6 @@ export default function PackageBoxMockup() {
     const active = slots.find((s) => s.key === netSlotKey) || slots[0];
     const act = netSlotActions(box, active);
     const tf = act.net?.transform || DEFAULT_CROP;
-    const isDefaultCrop = !tf.cropTop && !tf.cropBottom && !tf.cropLeft && !tf.cropRight && !(tf.rotate || 0);
     const hasImg = !!act.net?.img;
     return (
       <>
@@ -1361,22 +1358,14 @@ export default function PackageBoxMockup() {
             <button onClick={act.onPaste} className="flex-1" style={buttonStyle("quiet")}>
               貼り付け
             </button>
-            <button onClick={act.onDownloadGuide} className="flex-1" style={buttonStyle("quiet")} title="この寸法の展開図ガイドを300ppiで保存">
-              ガイド画像
-            </button>
           </div>
           {hasImg ? (
             <div className="flex gap-1.5">
-              <button onClick={act.onOpenEditor} className="flex-1" style={buttonStyle("quiet", { active: !isDefaultCrop })}>
-                トリミング編集
+              <button onClick={act.onOpenLayout} className="flex-1" style={buttonStyle("quiet", { active: !!act.net?.faceLayout })}>
+                面の配置を編集
               </button>
-              {!isDefaultCrop && (
-                <button onClick={() => act.setTransform(DEFAULT_CROP)} style={buttonStyle("quiet")}>
-                  解除
-                </button>
-              )}
               <button
-                onClick={() => act.setTransform((p) => ({ ...p, rotate: ((p.rotate || 0) + 90) % 360 }))}
+                onClick={act.onRotate}
                 title="画像を90°回転"
                 style={{ ...buttonStyle("quiet"), width: "36px", flexShrink: 0 }}
               >
@@ -1387,7 +1376,7 @@ export default function PackageBoxMockup() {
               </button>
             </div>
           ) : (
-            <p style={helpText}>ガイド画像に合わせて作った展開図を入れると、各面に貼られます。</p>
+            <p style={helpText}>展開図の画像を入れたら「面の配置を編集」で各面の位置を合わせます。並び方は自由です。</p>
           )}
         </div>
       </>
@@ -1742,7 +1731,7 @@ export default function PackageBoxMockup() {
   // trim editor used to delete the object being trimmed, Ctrl+Z undid scene edits
   // underneath the dialog
   const modalOpenRef = useRef(false);
-  modalOpenRef.current = !!(cropEditor || exportSettingsOpen || confirmDialog);
+  modalOpenRef.current = !!(cropEditor || layoutEditor || exportSettingsOpen || confirmDialog);
 
   // ---- undo/redo history over the scene objects and the registered library — the
   // "what you actually did" layer, not every scene-wide setting. Snapshots are pushed
@@ -2602,6 +2591,39 @@ export default function PackageBoxMockup() {
         </div>
       )}
 
+      {layoutEditor &&
+        (() => {
+          const box = boxInstances.find((b) => b.id === layoutEditor.boxId);
+          const slot = box && boxNetSlots(box).find((s) => s.key === layoutEditor.slotKey);
+          const net = slot && box.nets?.[slot.key];
+          if (!net?.img) return null;
+          const display = displayImage(net);
+          const dw = imgW(display);
+          const dh = imgH(display);
+          return (
+            <NetLayoutEditor
+              title={`面の配置 — ${slot.label}`}
+              image={display}
+              faces={faceRegions(slot).map((r) => ({
+                key: r.key,
+                label: r.label || FACE_LABELS[r.key] || r.key,
+                wMm: r.w,
+                hMm: r.h,
+                arrowRotate: r.arrowRotate || 0,
+              }))}
+              layout={net.faceLayout || defaultFaceLayout(slot, net, dw, dh)}
+              // "template" reset ignores any old whole-net trim: the template fitted to the image
+              defaultLayout={defaultFaceLayout(slot, { ...net, transform: { rotate: net.transform?.rotate || 0 } }, dw, dh)}
+              guideColor={guideColor}
+              onGuideColorChange={setGuideColor}
+              onCancel={() => setLayoutEditor(null)}
+              onApply={(faceLayout) => {
+                setBoxNet(box.id, slot.key, { faceLayout });
+                setLayoutEditor(null);
+              }}
+            />
+          );
+        })()}
       {cropEditor && (
         <CropEditorModal
           img={cropEditor.img}
