@@ -157,16 +157,177 @@ export function hexToRgba(hex, alpha) {
 
 // reads the first image found on the system clipboard as a Blob. Requires a user
 // gesture (called from a click handler) and, in most browsers, a secure context.
+// ---- clipboard → image ----
+// What a paste receives depends entirely on the source app. The browser only ever
+// exposes a few web types — image/png (Chrome converts a Windows bitmap/DIB or a "PNG"
+// clipboard format to it), image/svg+xml, text/html, text/plain — and silently drops
+// the rest (EMF/WMF, PDF, Illustrator's AICB). Illustrator puts vector formats on the
+// clipboard and, with "SVGコードを含める" on, its selection as SVG markup in plain
+// text. The old code took the first image/* type blindly and handed it on, so anything
+// that wasn't a decodable bitmap came through as a broken image.
+//
+// Now every candidate is tried in order of reliability, each must actually decode to an
+// image with a real size, and vector data is rasterized to a bitmap first. The types
+// that arrived are logged either way, so a failing paste can be diagnosed from the
+// console.
+const BITMAP_TYPES = ["image/png", "image/webp", "image/jpeg", "image/gif", "image/bmp", "image/avif"];
+const SVG_RASTER_LONG_SIDE = 2048; // vector art gets rendered at least this big — it's free sharpness
+
+export class ClipboardImageError extends Error {
+  constructor(message, types) {
+    super(message);
+    this.types = types;
+  }
+}
+
 export async function readClipboardImage() {
   if (!navigator.clipboard || !navigator.clipboard.read) {
-    throw new Error("このブラウザはクリップボードからの画像貼り付けに対応していません");
+    throw new ClipboardImageError("このブラウザはクリップボードからの画像貼り付けに対応していません", []);
   }
-  const items = await navigator.clipboard.read();
-  for (const item of items) {
-    const type = item.types.find((t) => t.startsWith("image/"));
-    if (type) return item.getType(type);
+  let items;
+  try {
+    items = await navigator.clipboard.read();
+  } catch (err) {
+    throw new ClipboardImageError(
+      err?.name === "NotAllowedError"
+        ? "クリップボードの読み取りが許可されていません。ブラウザのアドレスバーからクリップボードへのアクセスを許可してください。"
+        : `クリップボードを読み取れませんでした(${err?.message || err})`,
+      []
+    );
   }
-  throw new Error("クリップボードに画像が見つかりませんでした");
+  return imageFromClipboardItems(items);
+}
+
+// `items`: ClipboardItem-like objects ({ types, getType(type) → Promise<Blob> }).
+// Resolves to { img, source } where img is an HTMLImageElement with a real size.
+export async function imageFromClipboardItems(items) {
+  const entries = [];
+  for (const item of items) for (const type of item.types) entries.push({ item, type });
+  const types = entries.map((e) => e.type);
+  console.info("[paste] clipboard types:", types.length ? types.join(", ") : "(none)");
+
+  const rank = (type) => {
+    if (BITMAP_TYPES.includes(type)) return BITMAP_TYPES.indexOf(type);
+    if (type === "image/svg+xml") return 10;
+    if (type.startsWith("image/")) return 11;
+    if (type === "text/html") return 20;
+    if (type === "text/plain") return 30;
+    return 99;
+  };
+  const tried = [];
+  for (const { item, type } of [...entries].sort((a, b) => rank(a.type) - rank(b.type))) {
+    if (rank(type) === 99) continue;
+    try {
+      const blob = await item.getType(type);
+      const img = await decodeClipboardBlob(blob, type);
+      if (img) {
+        console.info(`[paste] used ${type} → ${imgW(img)}×${imgH(img)}px`);
+        return { img, source: type };
+      }
+      tried.push(`${type}: 画像データなし`);
+    } catch (err) {
+      tried.push(`${type}: ${err?.message || err}`);
+    }
+  }
+  if (tried.length) console.info("[paste] rejected:", tried.join(" / "));
+  const received = types.length ? types.join(", ") : "なし";
+  throw new ClipboardImageError(
+    `クリップボードに画像として読める形式がありませんでした(受け取った形式: ${received})。` +
+      "Illustratorからコピーした場合は、環境設定の「クリップボード処理」で「SVGコードを含める」がオンになっているか確認してください。",
+    types
+  );
+}
+
+async function decodeClipboardBlob(blob, type) {
+  if (type === "image/svg+xml") return rasterizeSvg(await blob.text());
+  if (type.startsWith("image/")) return bitmapBlobToImage(blob);
+  const text = await blob.text();
+  if (type === "text/html") {
+    const doc = new DOMParser().parseFromString(text, "text/html");
+    const svg = doc.querySelector("svg");
+    if (svg) return rasterizeSvg(svg.outerHTML);
+    const src = doc.querySelector("img[src]")?.getAttribute("src");
+    if (src) return loadImage(src, { crossOrigin: /^https?:/.test(src) });
+    return null;
+  }
+  // text/plain: Illustrator's "SVGコードを含める" puts the selection here as SVG markup
+  const start = text.indexOf("<svg");
+  const end = text.lastIndexOf("</svg>");
+  if (start >= 0 && end > start) return rasterizeSvg(text.slice(start, end + 6));
+  const trimmed = text.trim();
+  if (/^data:image\//.test(trimmed)) return loadImage(trimmed);
+  return null;
+}
+
+function loadImage(src, { crossOrigin = false } = {}) {
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    if (crossOrigin) img.crossOrigin = "anonymous";
+    img.onload = () => (imgW(img) > 0 && imgH(img) > 0 ? resolve(img) : reject(new Error("サイズが0の画像")));
+    img.onerror = () => reject(new Error("画像としてデコードできません"));
+    img.src = src;
+  });
+}
+
+// decoded, then re-encoded as PNG: the result is always a plain bitmap with a data URL
+// src, whatever the clipboard held — so downstream code (thumbnails, texture keys,
+// the trim editor) never has to care where it came from
+async function bitmapBlobToImage(blob) {
+  const url = URL.createObjectURL(blob);
+  try {
+    const decoded = await loadImage(url);
+    return await canvasToImage(drawToCanvas(decoded, imgW(decoded), imgH(decoded)));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+function drawToCanvas(img, w, h) {
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.max(1, Math.round(w));
+  canvas.height = Math.max(1, Math.round(h));
+  canvas.getContext("2d").drawImage(img, 0, 0, canvas.width, canvas.height);
+  return canvas;
+}
+function canvasToImage(canvas) {
+  return loadImage(canvas.toDataURL("image/png"));
+}
+
+// SVG → bitmap. Illustrator's markup often gives its size only as a viewBox (or in pt),
+// and an <img> with no intrinsic size renders at 0×0 or 300×150 — so the size is worked
+// out here and written onto the root element before loading.
+async function rasterizeSvg(markup) {
+  const doc = new DOMParser().parseFromString(markup, "image/svg+xml");
+  const svg = doc.documentElement;
+  if (!svg || svg.nodeName.toLowerCase() !== "svg" || doc.querySelector("parsererror")) throw new Error("SVGとして解釈できません");
+  const vb = (svg.getAttribute("viewBox") || "").split(/[\s,]+/).map(Number);
+  const unit = { pt: 4 / 3, px: 1, mm: 96 / 25.4, cm: 96 / 2.54, in: 96, "": 1 };
+  const len = (v) => {
+    const m = /^([\d.]+)\s*(pt|px|mm|cm|in)?$/.exec((v || "").trim());
+    return m ? parseFloat(m[1]) * unit[m[2] || ""] : NaN;
+  };
+  let w = len(svg.getAttribute("width"));
+  let h = len(svg.getAttribute("height"));
+  if (!(w > 0 && h > 0) && vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+    w = vb[2];
+    h = vb[3];
+  }
+  if (!(w > 0 && h > 0)) throw new Error("SVGの大きさが分かりません");
+  const k = Math.max(1, SVG_RASTER_LONG_SIDE / Math.max(w, h));
+  const outW = Math.round(w * k);
+  const outH = Math.round(h * k);
+  if (!svg.getAttribute("viewBox")) svg.setAttribute("viewBox", `0 0 ${w} ${h}`);
+  svg.setAttribute("width", outW);
+  svg.setAttribute("height", outH);
+  if (!svg.getAttribute("xmlns")) svg.setAttribute("xmlns", "http://www.w3.org/2000/svg");
+  const blob = new Blob([new XMLSerializer().serializeToString(svg)], { type: "image/svg+xml" });
+  const url = URL.createObjectURL(blob);
+  try {
+    const img = await loadImage(url);
+    return await canvasToImage(drawToCanvas(img, outW, outH));
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 export function blobToImage(blob) {
@@ -187,8 +348,7 @@ export function blobToImage(blob) {
 export function makePasteHandler(onImage) {
   return async () => {
     try {
-      const blob = await readClipboardImage();
-      const img = await blobToImage(blob);
+      const { img } = await readClipboardImage();
       onImage(img);
     } catch (err) {
       alert(err?.message || "クリップボードからの貼り付けに失敗しました");
