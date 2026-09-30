@@ -1,4 +1,4 @@
-import React from "react";
+import React, { useMemo } from "react";
 import { componentThumbSrc } from "../lib/components.js";
 
 // outline/fill approximation for a shape kind via CSS clip-path — used for a
@@ -23,10 +23,16 @@ export function shapeClipPath(kind) {
 // more informative than a bare outline icon since it doubles as an actual preview of
 // what gets textured onto the placed object's top face.
 export default function ShapePreview({ component }) {
+  // cropping re-encodes the image to a data URL, which is far too expensive to redo on
+  // every render (this component renders once per library card AND once per swatch) —
+  // recompute only when the image or its crop rectangle actually changes.
+  const thumb = useMemo(
+    () => (component ? componentThumbSrc(component) : null),
+    [component?.img, component?.transform]
+  );
   if (!component) {
-    return <div className="w-full h-full rounded" style={{ background: "#242220" }} />;
+    return <div className="w-full h-full rounded" style={{ background: "var(--bg-surface-1)" }} />;
   }
-  const thumb = componentThumbSrc(component);
   if (component.kind === "svg") {
     return (
       <div

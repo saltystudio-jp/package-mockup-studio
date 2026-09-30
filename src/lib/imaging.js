@@ -39,13 +39,22 @@ export function mirroredImageCanvas(img) {
   return canvas;
 }
 
-// `transform` trims a crop rectangle off the uploaded image's own edges (in % of that
-// image's width/height); the remaining fractions describe what's left after cropping.
+// `transform` places the target frame over the uploaded image: each value is how far
+// that edge of the frame sits INSIDE the image's own edge, in % of the image's
+// width/height. Negative means the frame reaches past the image (the image was scaled
+// below the frame, or pushed off to one side) — the uncovered area comes out
+// transparent, since canvas drawImage clips a source rect that extends beyond the
+// image and shrinks the destination to match. Only the kept span is guarded: it can't
+// collapse to nothing or flip inside out.
 export function cropFractions(transform) {
-  const cropLeft = Math.min(90, Math.max(0, transform?.cropLeft || 0)) / 100;
-  const cropRight = Math.min(90, Math.max(0, transform?.cropRight || 0)) / 100;
-  const cropTop = Math.min(90, Math.max(0, transform?.cropTop || 0)) / 100;
-  const cropBottom = Math.min(90, Math.max(0, transform?.cropBottom || 0)) / 100;
+  const v = (x) => (Number.isFinite(x) ? x : 0) / 100;
+  let cropLeft = v(transform?.cropLeft);
+  let cropRight = v(transform?.cropRight);
+  let cropTop = v(transform?.cropTop);
+  let cropBottom = v(transform?.cropBottom);
+  const MIN_SPAN = 0.01;
+  if (1 - cropLeft - cropRight < MIN_SPAN) cropRight = 1 - cropLeft - MIN_SPAN;
+  if (1 - cropTop - cropBottom < MIN_SPAN) cropBottom = 1 - cropTop - MIN_SPAN;
   return { cropLeft, cropRight, cropTop, cropBottom };
 }
 
@@ -56,8 +65,8 @@ export function cropToCanvas(img, transform) {
   const { cropLeft, cropRight, cropTop, cropBottom } = cropFractions(transform);
   const sx = imgW(img) * cropLeft;
   const sy = imgH(img) * cropTop;
-  const sw = imgW(img) * Math.max(0.01, 1 - cropLeft - cropRight);
-  const sh = imgH(img) * Math.max(0.01, 1 - cropTop - cropBottom);
+  const sw = imgW(img) * (1 - cropLeft - cropRight);
+  const sh = imgH(img) * (1 - cropTop - cropBottom);
   const canvas = document.createElement("canvas");
   canvas.width = Math.max(1, Math.round(sw));
   canvas.height = Math.max(1, Math.round(sh));
@@ -264,4 +273,16 @@ export function detectAlphaShapeKind(canvas) {
   const boxArea = (maxX - minX + 1) * (maxY - minY + 1);
   const fillRatio = opaqueCount / boxArea;
   return fillRatio < 0.85 ? "circle" : "roundedSquare";
+}
+
+// Short, stable identity for an image, for texture cache keys. Keys used to embed
+// `img.src` directly — for an uploaded file that's the entire base64 data URL, so every
+// render built (and compared) multi-megabyte strings per box just to decide whether
+// anything had changed. Image elements are never mutated after load, so tagging each
+// one with a counter is equivalent and O(1).
+let imageKeyCounter = 0;
+export function imageKey(img) {
+  if (!img) return "";
+  if (!img.__pmsKey) img.__pmsKey = ++imageKeyCounter;
+  return img.__pmsKey;
 }

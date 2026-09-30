@@ -1,0 +1,71 @@
+// Theme token tables — each theme supplies the same set of CSS custom properties,
+// applied on the app's root element via inline style (see PackageBoxMockup.jsx).
+// Accent/highlight intentionally stay close across themes (a brand color shouldn't
+// flip hue when the user just wants a brighter workspace); everything else (surface
+// layers, borders, text) is tuned per theme so contrast holds up in each.
+export const THEMES = {
+  dark: {
+    label: "ダーク",
+    "--bg-app": "#151412",
+    "--bg-canvas": "#100f0d",
+    "--bg-surface-2": "#1c1a17",
+    "--bg-surface-1": "#242220",
+    "--bg-well": "#12203a",
+    "--border": "#3a372f",
+    "--border-strong": "#302d27",
+    "--border-well": "#3a5a78",
+    "--text-primary": "#efe6d4",
+    "--text-secondary": "#a89f8f",
+    "--text-muted": "#7d7568",
+    "--text-faint": "#5c584a",
+    "--row-hover": "#2b2822",
+    "--row-selected": "#332e26",
+    "--dropdown-hover": "#2c2924",
+    "--accent": "#e2432a",
+    "--highlight": "#5fd3d9",
+  },
+  light: {
+    label: "ライト",
+    "--bg-app": "#f4f1ea",
+    "--bg-canvas": "#e6e1d3",
+    "--bg-surface-2": "#ffffff",
+    "--bg-surface-1": "#fbf9f4",
+    "--bg-well": "#eef2f7",
+    "--border": "#ddd6c8",
+    "--border-strong": "#cfc7b4",
+    "--border-well": "#c3cfdc",
+    "--text-primary": "#2a2620",
+    "--text-secondary": "#5c5648",
+    "--text-muted": "#857d6c",
+    "--text-faint": "#a8a08e",
+    "--row-hover": "#ece6d6",
+    "--row-selected": "#e3d9c0",
+    "--dropdown-hover": "#ece6d6",
+    "--accent": "#e2432a",
+    "--highlight": "#0f9aa3",
+  },
+  sepia: {
+    label: "セピア",
+    "--bg-app": "#2b2420",
+    "--bg-canvas": "#1f1a17",
+    "--bg-surface-2": "#3a3128",
+    "--bg-surface-1": "#443a2f",
+    "--bg-well": "#2e2a1f",
+    "--border": "#5c4f3d",
+    "--border-strong": "#4a4032",
+    "--border-well": "#6b5842",
+    "--text-primary": "#f2e6d3",
+    "--text-secondary": "#c9b89c",
+    "--text-muted": "#a3927a",
+    "--text-faint": "#7d7160",
+    "--row-hover": "#453b30",
+    "--row-selected": "#524436",
+    "--dropdown-hover": "#453b30",
+    "--accent": "#e2705a",
+    "--highlight": "#5fc9be",
+  },
+};
+
+export const THEME_ORDER = ["dark", "light", "sepia"];
+export const DEFAULT_THEME = "dark";
+export const THEME_STORAGE_KEY = "package-mockup-studio:theme";

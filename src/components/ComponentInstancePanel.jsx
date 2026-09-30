@@ -1,145 +1,172 @@
-import React, { useState } from "react";
+import React from "react";
 import ScrubField from "./ScrubField.jsx";
-import ShapePreview from "./ShapePreview.jsx";
+import ShapePreview, { shapeClipPath } from "./ShapePreview.jsx";
+import ToggleSwitch from "./ToggleSwitch.jsx";
+import Section from "./Section.jsx";
+import SegmentedControl from "./SegmentedControl.jsx";
+import { buttonStyle, helpText, sectionMeta } from "../lib/ui.js";
+import { COMPONENT_SHAPE_KINDS } from "../lib/components.js";
 
-// contextual inspector for the currently-selected component instance — rendered only
-// when a component is the active selection (see PackageBoxMockup.jsx). Replaces the
-// old separate CardPanel/PiecePanel: since a component now bundles shape+size+color+
-// image, picking "which component" is a single big-thumbnail-click-to-open-a-grid
-// control (matching the reference layout) instead of two separate pickers (shape, then
-// symbol). Registering a brand new component still happens in the library (asset
-// drawer) — this panel only assigns an EXISTING one plus this instance's placement.
-export default function ComponentInstancePanel({ components, componentInstances, selectedInstanceId, onUpdate, onOpenComponentLibrary }) {
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const selected = componentInstances.find((c) => c.id === selectedInstanceId) || componentInstances[0] || null;
-  const selectedIndex = selected ? componentInstances.findIndex((c) => c.id === selected.id) : -1;
-  const patch = (p) => selected && onUpdate(selected.id, p);
-
-  if (!selected) return null;
-  const current = components.find((c) => c.id === selected.componentId) || null;
-
+// Inspector for the selected card/token/piece. Everything about it is edited here —
+// shape and size included — since the object owns its own appearance; the library
+// is only where it came from. Built from the same Section/SegmentedControl pieces as
+// the box inspector so selecting a box vs. a card changes the sidebar's contents, not
+// its shape. (The name / 置き換え / 登録 header above this is shared with boxes.)
+export default function ComponentInstancePanel({
+  instance: c,
+  onUpdate,
+  onUploadImage,
+  onPasteImage,
+  onClearImage,
+  onOpenCropEditor,
+  onAutoDetectShape,
+  onSetSvgShape,
+}) {
+  const t = c.transform || {};
+  const cropped = !!(t.cropTop || t.cropBottom || t.cropLeft || t.cropRight);
   return (
-    <div className="mb-4 rounded-lg p-3" style={{ background: "#242220", border: "1px solid #3a372f" }}>
-      <div className="text-xs uppercase mb-2" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
-        配置(コンポーネント{selectedIndex + 1})
-      </div>
-
-      <div className="text-xs uppercase mb-1" style={{ color: "#a89f8f", letterSpacing: "0.08em" }}>
-        絵柄(コンポーネント)
-      </div>
-      <div className="relative mb-3" style={{ width: "96px" }} onMouseLeave={() => {}}>
-        <button
-          onClick={() => setPickerOpen((v) => !v)}
-          className="w-full rounded overflow-hidden"
-          style={{ aspectRatio: "1 / 1", background: "#12203a", border: "1px solid #3a5a78" }}
-          title="クリックでコンポーネントを変更"
-        >
-          <ShapePreview component={current} />
-        </button>
-        <button
-          onClick={() => setPickerOpen(true)}
-          className="absolute bottom-1 right-1 text-xs rounded px-1.5 py-0.5"
-          style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
-        >
-          変更
-        </button>
-
-        {pickerOpen && (
-          <div
-            className="absolute z-20 top-full mt-1 left-0 rounded p-2 flex flex-col gap-2"
-            style={{ background: "#1c1a17", border: "1px solid #3a372f", width: "220px" }}
+    <>
+      <Section first title="形状" meta="mm">
+        <div className="flex gap-1.5 mb-2.5">
+          {COMPONENT_SHAPE_KINDS.map((k) => {
+            const active = c.kind === k.key;
+            return (
+              <button
+                key={k.key}
+                onClick={() => onUpdate({ kind: k.key })}
+                title={k.label}
+                aria-pressed={active}
+                className="flex-1 rounded flex items-center justify-center"
+                style={{ height: "32px", padding: "6px", background: "var(--bg-well)", border: active ? "2px solid var(--accent)" : "1px solid var(--border-well)" }}
+              >
+                <div className="w-full h-full" style={{ background: active ? "var(--accent)" : "var(--text-muted)", clipPath: shapeClipPath(k.key) }} />
+              </button>
+            );
+          })}
+          <label
+            className="ui-btn flex-1 rounded flex items-center justify-center cursor-pointer"
+            title="SVGの輪郭を形状として読み込む"
+            style={{
+              height: "32px",
+              fontSize: "10px",
+              fontWeight: 600,
+              background: "var(--bg-well)",
+              border: c.kind === "svg" ? "2px solid var(--accent)" : "1px solid var(--border-well)",
+              color: c.kind === "svg" ? "var(--accent)" : "var(--text-muted)",
+            }}
           >
-            {components.length === 0 ? (
-              <p className="text-xs" style={{ color: "#7d7568" }}>
-                まだコンポーネントがありません。
-              </p>
-            ) : (
-              <div className="grid grid-cols-4 gap-1">
-                {components.map((c) => (
-                  <button
-                    key={c.id}
-                    onClick={() => {
-                      patch({ componentId: c.id });
-                      setPickerOpen(false);
-                    }}
-                    title={c.name}
-                    className="rounded overflow-hidden"
-                    style={{
-                      width: "44px",
-                      height: "44px",
-                      border: selected.componentId === c.id ? "2px solid #e2432a" : "1px solid #3a372f",
-                    }}
-                  >
-                    <ShapePreview component={c} />
-                  </button>
-                ))}
-              </div>
-            )}
-            <button
-              onClick={() => {
-                setPickerOpen(false);
-                onOpenComponentLibrary?.();
+            SVG
+            <input
+              type="file"
+              accept=".svg,image/svg+xml"
+              className="hidden"
+              onChange={(e) => {
+                onSetSvgShape(e.target.files?.[0]);
+                e.target.value = "";
               }}
-              className="text-xs rounded py-1.5"
-              style={{ background: "#3a372f", color: "#5fd3d9" }}
-            >
-              ライブラリを開く(新規登録・編集)
-            </button>
-            <button onClick={() => setPickerOpen(false)} className="text-xs rounded py-1" style={{ background: "#1c1a17", color: "#7d7568" }}>
-              閉じる
-            </button>
+            />
+          </label>
+        </div>
+        <div className="flex flex-col gap-2">
+          <ScrubField label="幅 W" value={c.w} onChange={(v) => onUpdate({ w: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
+          <ScrubField label="奥行 D" value={c.d} onChange={(v) => onUpdate({ d: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
+          <ScrubField label="厚み" value={c.thickness} onChange={(v) => onUpdate({ thickness: Math.max(0.1, v) })} min={0.1} max={300} unit="mm" step={0.1} decimals={1} />
+          {c.kind === "roundedSquare" && (
+            <ScrubField
+              label="角の丸み"
+              value={c.cornerRadius}
+              onChange={(v) => onUpdate({ cornerRadius: Math.max(0, v) })}
+              min={0}
+              max={Math.max(1, Math.min(c.w, c.d) / 2)}
+              unit="mm"
+              step={0.5}
+              decimals={1}
+            />
+          )}
+        </div>
+      </Section>
+
+      <Section title="色・画像" hint="画像は上面に貼られます(面の形に合わせて自動でトリミング)。透過PNGなら、透明部分から形状と角の丸みを検出できます。">
+        <div className="flex gap-2.5">
+          <div className="rounded overflow-hidden flex-shrink-0" style={{ width: "64px", height: "64px", background: "var(--bg-well)", padding: "6px" }}>
+            <ShapePreview component={c} />
           </div>
-        )}
-      </div>
+          <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={c.color}
+                onChange={(e) => onUpdate({ color: e.target.value })}
+                title="本体の色(側面・裏面、画像の透明部分)"
+                style={{ width: "26px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer", flexShrink: 0 }}
+              />
+              <span style={sectionMeta}>{c.color}</span>
+              {c.fileName && (
+                <span className="flex-1 truncate text-right" style={{ ...sectionMeta, direction: "rtl" }}>
+                  {c.fileName}
+                </span>
+              )}
+            </div>
+            <div className="flex gap-1.5">
+              <label className="ui-btn flex-1 block text-center cursor-pointer" style={c.img ? buttonStyle("quiet") : buttonStyle("primary")}>
+                アップロード
+                <input type="file" accept="image/*" onChange={onUploadImage} className="hidden" />
+              </label>
+              <button onClick={onPasteImage} className="flex-1" style={buttonStyle("quiet")}>
+                貼り付け
+              </button>
+            </div>
+            {c.img ? (
+              <div className="flex gap-1.5">
+                <button onClick={onOpenCropEditor} className="flex-1" style={buttonStyle("quiet", { active: cropped })}>
+                  トリミング
+                </button>
+                <button onClick={onAutoDetectShape} className="flex-1" style={buttonStyle("quiet")} title="透明部分から形状と角の丸みを推定">
+                  形状検出
+                </button>
+                <button onClick={onClearImage} title="画像を削除" style={{ ...buttonStyle("danger"), width: "28px", flexShrink: 0 }}>
+                  ×
+                </button>
+              </div>
+            ) : (
+              <p style={helpText}>画像がないときは本体の色で表示されます。</p>
+            )}
+          </div>
+        </div>
+      </Section>
 
-      <div className="flex flex-col gap-2 mb-2">
-        <ScrubField label="位置 X" value={selected.x} onChange={(v) => patch({ x: v })} min={-2000} max={2000} unit="mm" />
-        <ScrubField label="位置 Z" value={selected.z} onChange={(v) => patch({ z: v })} min={-2000} max={2000} unit="mm" />
-        <ScrubField label="回転(Y軸)" value={selected.rotY} onChange={(v) => patch({ rotY: v })} min={0} max={359} unit="°" />
-      </div>
+      <Section title="配置" collapsible summary={`${Math.round(c.x)}, ${Math.round(c.z)} / ${Math.round(c.rotY)}°`}>
+        <div className="flex flex-col gap-2">
+          <ScrubField label="位置 X" value={c.x} onChange={(v) => onUpdate({ x: v })} min={-2000} max={2000} unit="mm" />
+          <ScrubField label="位置 Y" value={c.floatHeight} onChange={(v) => onUpdate({ floatHeight: v })} min={-200} max={500} unit="mm" />
+          <ScrubField label="位置 Z" value={c.z} onChange={(v) => onUpdate({ z: v })} min={-2000} max={2000} unit="mm" />
+          <ScrubField label="回転 Y" value={c.rotY} onChange={(v) => onUpdate({ rotY: v })} min={0} max={359} unit="°" />
+        </div>
+      </Section>
 
-      <div className="flex gap-2 mb-3">
-        <button
-          onClick={() => patch({ orientation: "standing" })}
-          className="flex-1 text-xs rounded py-2"
-          style={{
-            background: selected.orientation === "standing" ? "#e2432a" : "#3a372f",
-            color: selected.orientation === "standing" ? "#1c1a17" : "#efe6d4",
-            fontWeight: selected.orientation === "standing" ? 600 : 400,
-          }}
-        >
-          縦置き
-        </button>
-        <button
-          onClick={() => patch({ orientation: "lying" })}
-          className="flex-1 text-xs rounded py-2"
-          style={{
-            background: selected.orientation === "lying" ? "#e2432a" : "#3a372f",
-            color: selected.orientation === "lying" ? "#1c1a17" : "#efe6d4",
-            fontWeight: selected.orientation === "lying" ? 600 : 400,
-          }}
-        >
-          平置き
-        </button>
-      </div>
+      <Section
+        title="姿勢"
+        collapsible
+        defaultOpen={false}
+        summary={`${c.orientation === "standing" ? "縦置き" : "平置き"}${c.tiltX !== 0 || c.tiltZ !== 0 ? ` / 傾き ${c.tiltX}°,${c.tiltZ}°` : ""}`}
+      >
+        <SegmentedControl
+          value={c.orientation === "standing" ? "standing" : "lying"}
+          onChange={(v) => onUpdate({ orientation: v })}
+          options={[
+            { value: "standing", label: "縦置き" },
+            { value: "lying", label: "平置き" },
+          ]}
+        />
+        <div className="flex flex-col gap-2 mt-3">
+          <ScrubField label="傾き(前後)" value={c.tiltX} onChange={(v) => onUpdate({ tiltX: v })} min={-45} max={45} unit="°" />
+          <ScrubField label="傾き(左右)" value={c.tiltZ} onChange={(v) => onUpdate({ tiltZ: v })} min={-45} max={45} unit="°" />
+        </div>
+      </Section>
 
-      <div className="flex flex-col gap-2">
-        <ScrubField label="傾き(前後)" value={selected.tiltX} onChange={(v) => patch({ tiltX: v })} min={-45} max={45} unit="°" />
-        <ScrubField label="傾き(左右)" value={selected.tiltZ} onChange={(v) => patch({ tiltZ: v })} min={-45} max={45} unit="°" />
-        <ScrubField label="地面からの高さ" value={selected.floatHeight} onChange={(v) => patch({ floatHeight: v })} min={-200} max={500} unit="mm" />
-      </div>
-
-      <div className="mt-3 pt-3" style={{ borderTop: "1px solid #3a372f" }}>
-        <label className="flex items-center gap-2 mb-2 text-xs" style={{ color: "#a89f8f" }}>
-          <input
-            type="checkbox"
-            checked={selected.groundSnap !== false}
-            onChange={(e) => patch({ groundSnap: e.target.checked })}
-          />
-          接地する(地面、または下のレイヤーのオブジェクトに自動で乗る)
-        </label>
-        <ScrubField label="レイヤー" value={selected.layer ?? 0} onChange={(v) => patch({ layer: Math.round(v) })} min={0} max={20} />
-      </div>
-    </div>
+      <Section title="スタッキング" collapsible defaultOpen={false} summary={c.groundSnap !== false ? "接地する" : "固定"}>
+        <ToggleSwitch checked={c.groundSnap !== false} onChange={(v) => onUpdate({ groundSnap: v })} label="接地する(下のレイヤーに自動で乗る)" />
+      </Section>
+    </>
   );
 }

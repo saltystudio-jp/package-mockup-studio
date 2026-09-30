@@ -1,6 +1,8 @@
 import React, { useState, useRef } from "react";
 import { imgW, imgH, hexToRgba } from "../lib/imaging.js";
 import ScrubField from "./ScrubField.jsx";
+import { sectionTitle } from "../lib/ui.js";
+import { DEFAULT_GUIDE_COLOR } from "../lib/nets.js";
 
 const CROP_MAX_W = 640;
 const CROP_MAX_H = 480;
@@ -63,7 +65,9 @@ export default function CropEditorModal({
     };
   });
   const dragRef = useRef(null);
-  const strokeColor = guideColor || "#5fd3d9";
+  // a literal hex, never var(--token): it feeds <input type=color> (which only accepts
+  // #rrggbb and showed black for anything else) and hexToRgba
+  const strokeColor = /^#/.test(guideColor || "") ? guideColor : DEFAULT_GUIDE_COLOR;
 
   const dispW = imgW(img) * baseScale * zoom;
   const dispH = imgH(img) * baseScale * zoom;
@@ -133,28 +137,28 @@ export default function CropEditorModal({
     >
       <div
         className="rounded-lg p-4"
-        style={{ background: "#1c1a17", border: "1px solid #3a372f", maxWidth: "92vw" }}
+        style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", maxWidth: "92vw" }}
       >
         <div className="flex items-center justify-between gap-3 mb-1">
-          <div className="text-sm font-semibold" style={{ color: "#efe6d4" }}>
+          <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
             トリミング編集
           </div>
           {onGuideColorChange && (
             <label
               className="flex items-center gap-1 text-xs flex-shrink-0"
-              style={{ color: "#a89f8f" }}
+              style={{ color: "var(--text-secondary)" }}
             >
               線の色
               <input
                 type="color"
                 value={strokeColor}
                 onChange={(e) => onGuideColorChange(e.target.value)}
-                style={{ width: "28px", height: "22px", padding: 0, border: "1px solid #3a372f", background: "none", cursor: "pointer" }}
+                style={{ width: "28px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer" }}
               />
             </label>
           )}
         </div>
-        <p className="text-xs mb-3" style={{ color: "#7d7568" }}>
+        <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
           ドラッグで位置調整 / ホイールかスライダーで拡大縮小。下のスライダー・数値でも調整できます。
         </p>
         <div
@@ -233,8 +237,8 @@ export default function CropEditorModal({
           {sliderControl("拡大", zoom, handleZoom, { min: 1, max: CROP_MAX_ZOOM, step: 0.01, decimals: 2, unit: "倍" })}
         </div>
         <div
-          className="text-xs uppercase mt-3 mb-1"
-          style={{ color: "#7d7568", letterSpacing: "0.05em", width: Math.max(frameW, 320) }}
+          className="mt-3 mb-1"
+          style={{ ...sectionTitle, width: Math.max(frameW, 320) }}
         >
           位置調整
         </div>
@@ -248,14 +252,14 @@ export default function CropEditorModal({
           <button
             onClick={onCancel}
             className="flex-1 text-sm rounded py-2"
-            style={{ background: "#3a372f", color: "#efe6d4" }}
+            style={{ background: "var(--border)", color: "var(--text-primary)" }}
           >
             キャンセル
           </button>
           <button
             onClick={apply}
             className="flex-1 text-sm rounded py-2"
-            style={{ background: "#e2432a", color: "#1c1a17", fontWeight: 600 }}
+            style={{ background: "var(--accent)", color: "#1c1a17", fontWeight: 600 }}
           >
             適用
           </button>

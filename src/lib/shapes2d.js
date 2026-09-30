@@ -157,6 +157,36 @@ function splitCapGroups(geometry) {
   return nonIndexed;
 }
 
+// ExtrudeGeometry gives its caps "world" UVs — the raw shape coordinates (-0.5..0.5 for a
+// unit preset, the true half-size for a card's rounded rect). Textures sample 0..1, so
+// the image only covered part of the face and clamp-to-edge smeared its border pixels
+// across the rest (a card showed one flat color from its image's edge). Remapping the
+// caps to 0..1 across the shape's own bounding box makes the image span the whole face,
+// with u along x and v along y (which becomes "toward the back" once the piece is laid
+// flat) — the frame the cover-fit repeat/offset in the texture effect assumes.
+function normalizeCapUVs(geometry) {
+  const pos = geometry.attributes.position;
+  const normal = geometry.attributes.normal;
+  const uv = geometry.attributes.uv;
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let i = 0; i < pos.count; i++) {
+    minX = Math.min(minX, pos.getX(i));
+    maxX = Math.max(maxX, pos.getX(i));
+    minY = Math.min(minY, pos.getY(i));
+    maxY = Math.max(maxY, pos.getY(i));
+  }
+  const w = Math.max(1e-9, maxX - minX);
+  const h = Math.max(1e-9, maxY - minY);
+  for (let i = 0; i < pos.count; i++) {
+    if (Math.abs(normal.getZ(i)) < 0.5) continue; // side walls keep their own UVs
+    uv.setXY(i, (pos.getX(i) - minX) / w, (pos.getY(i) - minY) / h);
+  }
+  uv.needsUpdate = true;
+}
+
 // builds a piece's final world-space geometry: extrude the unit shape by a unit depth,
 // scale to the piece's actual W (mm) / D (mm) / thickness (mm) in three.js units, then
 // rotate so the thin axis lies along world Y (thickness "up") with the footprint on
@@ -166,6 +196,7 @@ export function buildExtrudedPieceGeometry(shape, { widthUnits, depthUnits, thic
   const geo = new THREE.ExtrudeGeometry(shape, { depth: 1, bevelEnabled: false, curveSegments });
   const split = splitCapGroups(geo);
   geo.dispose();
+  normalizeCapUVs(split);
   split.scale(widthUnits, depthUnits, thicknessUnits);
   split.rotateX(-Math.PI / 2);
   return split;

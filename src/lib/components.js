@@ -1,14 +1,8 @@
-// unified "component" registry: replaces the old separate symbol library (image+color)
-// and piece shape library (kind+dims) — a component now bundles EVERYTHING about one
-// reusable design (shape, size, color, image) in a single entry, and a placed instance
-// just picks which component to show. "Card" and "piece" are no longer distinct data
-// types; they're only quick-start PRESETS (default values) offered when registering a
-// new component — a "card-preset" component is just a thin rounded-rect that's free to
-// be edited into any other shape afterward, same as a "piece-preset" component could be
-// thinned out into something card-like. This matches the physical intuition that both
-// are "a shape, extruded to a thickness, with a printed face and a body color" — see
-// shapes2d.js for the geometry side of that unification.
-import { cropToCanvas, imgW, imgH } from "./imaging.js";
+// Appearance helpers for flat components (cards, tokens, pieces): "a shape, extruded
+// to a thickness, with a printed top face and a body color" — see shapes2d.js for the
+// geometry side. A placed component owns all of this itself; library templates carry
+// the same fields (lib/presets.js).
+import { cropToCanvas } from "./imaging.js";
 
 export const DEFAULT_COMPONENT_COLOR = "#c9b896";
 
@@ -18,29 +12,6 @@ export const COMPONENT_SHAPE_KINDS = [
   { key: "hexagon", label: "六角形" },
   { key: "triangle", label: "三角形" },
 ];
-
-export const COMPONENT_PRESETS = {
-  card: { label: "カード用(薄い角丸)", kind: "roundedSquare", w: 63, d: 88, thickness: 1.5, cornerRadius: 3 },
-  piece: { label: "駒用(厚い円形)", kind: "circle", w: 24, d: 24, thickness: 8, cornerRadius: 0 },
-};
-
-export function createComponent({ id, name, presetKey = "card", color, img = null, fileName = "", transform }) {
-  const preset = COMPONENT_PRESETS[presetKey] || COMPONENT_PRESETS.card;
-  return {
-    id,
-    name,
-    kind: preset.kind,
-    w: preset.w,
-    d: preset.d,
-    thickness: preset.thickness,
-    cornerRadius: preset.cornerRadius,
-    svgText: null, // only set when kind === "svg" (re-parsed at geometry-build time)
-    img,
-    fileName,
-    transform: transform || { cropTop: 0, cropBottom: 0, cropLeft: 0, cropRight: 0 },
-    color: color || DEFAULT_COMPONENT_COLOR,
-  };
-}
 
 // bakes a component into a single opaque canvas: the component's tint color fills the
 // background, and its (optionally cropped) image is drawn on top at native resolution —
@@ -69,12 +40,13 @@ export function buildComponentFaceCanvas(component) {
   return canvas;
 }
 
+// preview source for the library/instance thumbnails. Returns the CROPPED image, not
+// the raw upload — otherwise trimming an image visibly changes the 3D face while the
+// thumbnail keeps showing the untrimmed original, which reads as "trim isn't working".
 export function componentThumbSrc(component) {
-  if (component?.img) return component.img.src || component.img.toDataURL?.();
-  return null;
-}
-
-export function componentAspect(component) {
-  if (!component?.img) return 1;
-  return imgW(component.img) / imgH(component.img);
+  if (!component?.img) return null;
+  const t = component.transform;
+  const uncropped = !t || (!t.cropTop && !t.cropBottom && !t.cropLeft && !t.cropRight);
+  if (uncropped) return component.img.src || component.img.toDataURL?.();
+  return cropToCanvas(component.img, t).toDataURL();
 }
