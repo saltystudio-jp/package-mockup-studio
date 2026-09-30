@@ -1,5 +1,5 @@
 import React, { useEffect, useRef, useState } from "react";
-import { imgW, imgH, hexToRgba } from "../lib/imaging.js";
+import { imgW, imgH } from "../lib/imaging.js";
 import ScrubField from "./ScrubField.jsx";
 import ToggleSwitch from "./ToggleSwitch.jsx";
 import { sectionTitle, sectionMeta, buttonStyle } from "../lib/ui.js";
@@ -12,9 +12,9 @@ const STAGE_MARGIN = 44; // visible pasteboard around the frame, so the image ou
 const SNAP_PX = 8; // snap distance, in screen pixels (so it feels the same at any frame size)
 const SNAP_GUIDE = "#ff4fa3"; // literal: drawn over arbitrary artwork, must stay visible on it
 
-// Trim editor for anything that maps an image onto a known physical rectangle: a box
-// net (aspectW × aspectH = the net's size in mm, with its face `regions` overlaid) or a
-// card/token face (its w × d in mm).
+// Trim editor for a card/token face: maps an image onto the face's physical rectangle
+// (aspectW × aspectH = its w × d in mm). Box nets have their own editor
+// (NetLayoutEditor), where each face is placed on the sheet instead.
 //
 // Everything is held in the frame's own millimetres — the image's top-left position
 // (x, y) and its displayed size — rather than as edge percentages, because that's how
@@ -24,18 +24,14 @@ const SNAP_GUIDE = "#ff4fa3"; // literal: drawn over arbitrary artwork, must sta
 // The result is still saved as edge percentages (the slicer's format); percentages
 // outside 0–100 mean the frame reaches past the image (see cropFractions).
 //
-// Dragging snaps the image's edges and centre to the frame's edges and centre and to
-// every face boundary on a net, with a guide line showing what caught — hold Alt, or
+// Dragging snaps the image's edges and centre to the frame's edges and centre, with a
+// guide line showing what caught — hold Alt, or
 // switch snapping off, to place freely.
 export default function CropEditorModal({
   img,
   aspectW,
   aspectH,
-  regions,
-  regionLabel,
   initialCrop,
-  guideColor,
-  onGuideColorChange,
   onApply,
   onCancel,
 }) {
@@ -79,7 +75,6 @@ export default function CropEditorModal({
   const [snapOn, setSnapOn] = useState(true);
   const [guides, setGuides] = useState({ x: null, y: null });
   const dragRef = useRef(null);
-  const strokeColor = /^#/.test(guideColor || "") ? guideColor : DEFAULT_GUIDE_COLOR;
 
   // zoom about a point given in frame mm (the frame centre for the field, the cursor
   // for the wheel), so what's under that point stays put
@@ -112,13 +107,9 @@ export default function CropEditorModal({
   };
   const center = () => setState((s) => ({ ...s, x: (aspectW - wMm) / 2, y: (aspectH - hMm) / 2 }));
 
-  // everything the image's edges and centre can catch on: the frame, and each face
+  // what the image's edges and centre can catch on: the frame's edges and centre
   const targetsX = [0, aspectW / 2, aspectW];
   const targetsY = [0, aspectH / 2, aspectH];
-  (regions || []).forEach((r) => {
-    targetsX.push(r.x, r.x + r.w);
-    targetsY.push(r.y, r.y + r.h);
-  });
   const snapAxis = (start, size, targets, thresholdMm) => {
     let best = null;
     [start, start + size / 2, start + size].forEach((edge, i) => {
@@ -241,7 +232,7 @@ export default function CropEditorModal({
               top: STAGE_MARGIN,
               width: frameW,
               height: frameH,
-              border: `1px solid ${strokeColor}`,
+              border: `1px solid ${DEFAULT_GUIDE_COLOR}`,
               boxShadow: "0 0 0 9999px rgba(0,0,0,0.55)",
               pointerEvents: "none",
             }}
@@ -252,32 +243,6 @@ export default function CropEditorModal({
             style={{ position: "absolute", top: 0, left: 0, pointerEvents: "none" }}
           >
             <g transform={`translate(${STAGE_MARGIN},${STAGE_MARGIN})`}>
-              {(regions || []).map((r) => {
-                const rx = r.x * pxPerMm;
-                const ry = r.y * pxPerMm;
-                const rw = r.w * pxPerMm;
-                const rh = r.h * pxPerMm;
-                const flap = r.face === false;
-                return (
-                  <g key={r.key}>
-                    <rect
-                      x={rx}
-                      y={ry}
-                      width={rw}
-                      height={rh}
-                      fill={flap ? "rgba(160,170,180,0.12)" : hexToRgba(strokeColor, 0.08)}
-                      stroke={flap ? "#8a96a3" : strokeColor}
-                      strokeWidth={1.5}
-                      strokeDasharray={flap ? "3 3" : "6 4"}
-                    />
-                    {rw > 30 && rh > 16 && (
-                      <text x={rx + rw / 2} y={ry + 14} fill="#eef6f6" fontSize={11} textAnchor="middle" fontFamily="Inter, sans-serif" style={{ textShadow: "0 1px 3px rgba(0,0,0,0.8)" }}>
-                        {regionLabel ? regionLabel(r.key) : r.key}
-                      </text>
-                    )}
-                  </g>
-                );
-              })}
               {guides.x != null && (
                 <line x1={guides.x * pxPerMm} x2={guides.x * pxPerMm} y1={-STAGE_MARGIN} y2={frameH + STAGE_MARGIN} stroke={SNAP_GUIDE} strokeWidth={1} />
               )}
@@ -293,20 +258,9 @@ export default function CropEditorModal({
             <div className="text-sm font-semibold" style={{ color: "var(--text-primary)" }}>
               トリミング編集
             </div>
-            {onGuideColorChange && (
-              <label className="flex items-center gap-1 text-xs flex-shrink-0" style={{ color: "var(--text-secondary)" }}>
-                線の色
-                <input
-                  type="color"
-                  value={strokeColor}
-                  onChange={(e) => onGuideColorChange(e.target.value)}
-                  style={{ width: "28px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer" }}
-                />
-              </label>
-            )}
           </div>
           <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-            ドラッグで移動、ホイールで拡大縮小。枠と各面の端・中央にスナップします(Altで一時解除)。
+            ドラッグで移動、ホイールで拡大縮小。枠の端・中央にスナップします(Altで一時解除)。
           </p>
 
           <div className="mb-2" style={sectionTitle}>

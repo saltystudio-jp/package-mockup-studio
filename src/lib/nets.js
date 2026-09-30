@@ -1,15 +1,14 @@
-// Net (展開図) image plumbing shared by every box type: slicing an uploaded print sheet
-// into per-face canvases, the hidden baseline corrections the 身蓋 box's real print
+// Net (展開図) plumbing shared by every box type (slicing itself lives in netLayout.js):
+// the net templates, the hidden baseline corrections the 身蓋 box's real print
 // files need, and the printable guide overlay. Moved out of PackageBoxMockup.jsx so
 // the box-type geometry (boxModels.js) and the component can share it.
-import { imgW, imgH, cropFractions, rotatedImageCanvas, mirroredImageCanvas, hexToRgba } from "./imaging.js";
+import { imgW, imgH, cropFractions, hexToRgba } from "./imaging.js";
 
 
 // hidden baseline corrections for uploaded net images — most real print files need the
-// same fix, so these are applied unconditionally to the SLICING pipeline only. The crop
-// editor/guide preview deliberately shows the raw uploaded file instead (see
-// orientedTransform/rawSpaceLayout below), converting crop percentages between the two
-// coordinate spaces so what the user sees while trimming matches their own file.
+// same fix, so these are applied unconditionally to the SLICING pipeline only. The layout
+// editor and previews show the raw uploaded file instead (see rawSpaceLayout below),
+// so what the user sees matches their own file.
 // cyan guide lines; a literal hex because it paints into canvases and <input type=color>
 export const DEFAULT_GUIDE_COLOR = "#5fd3d9";
 
@@ -89,59 +88,9 @@ export function applyFaceTransform(canvas, dt) {
   return out;
 }
 
-// applies transform.rotate (if any) once, so downstream crop/slice math never has to
-// think about source rotation — everything else just treats this as "the image".
-// `baselineRotate`/`mirror` are hidden, fixed corrections (not shown in the UI) applied
-// on top of the user's own rotate value, for source files that consistently need the
-// same fix — the rotate button/label still reads relative to this shifted baseline.
-export function orientedImage(img, transform, opts) {
-  const baselineRotate = opts?.baselineRotate || 0;
-  const deg = ((baselineRotate + (transform?.rotate || 0)) % 360 + 360) % 360;
-  let out = deg ? rotatedImageCanvas(img, deg) : img;
-  if (opts?.mirror) out = mirroredImageCanvas(out);
-  return out;
-}
-
-// rotates a set of edge-trim amounts {top,bottom,left,right} the same way a canvas
-// rotation (clockwise, ctx.rotate) would move those edges — e.g. after a 90° rotation,
-// whatever used to trim the left edge now trims the top.
-function rotateEdges(edges, degrees) {
-  const deg = ((degrees % 360) + 360) % 360;
-  const { top, bottom, left, right } = edges;
-  if (deg === 90) return { top: left, right: top, bottom: right, left: bottom };
-  if (deg === 180) return { top: bottom, bottom: top, left: right, right: left };
-  if (deg === 270) return { top: right, right: bottom, bottom: left, left: top };
-  return edges;
-}
-function mirrorEdgesH(edges) {
-  return { ...edges, left: edges.right, right: edges.left };
-}
-
-// the crop UI always edits top/bottom/left/right against the RAW uploaded image (so
-// what the user sees while trimming matches their own file), but slicing samples from
-// the oriented (baselineRotate+mirror) image — this converts one set of edge-trim
-// percentages into the other so extractFaceCanvas keeps working exactly as before.
-export function orientedTransform(transform, opts) {
-  const totalDeg = (((opts?.baselineRotate || 0) + (transform?.rotate || 0)) % 360 + 360) % 360;
-  let edges = rotateEdges(
-    {
-      top: transform?.cropTop || 0,
-      bottom: transform?.cropBottom || 0,
-      left: transform?.cropLeft || 0,
-      right: transform?.cropRight || 0,
-    },
-    totalDeg
-  );
-  if (opts?.mirror) edges = mirrorEdgesH(edges);
-  return { ...transform, cropTop: edges.top, cropBottom: edges.bottom, cropLeft: edges.left, cropRight: edges.right };
-}
-
-// mirrors rawSpaceLayout's job but for the net-layout's region rectangles instead of
-// crop percentages, so the grid overlay drawn over the raw (unbaselined) image still
-// lines up with it. Only undoes the fixed baselineRotate(+mirror) — a user's own extra
-// 90°/270° rotate (rare, explicit) is intentionally left uncorrected here since that
-// would also require swapping the whole layout's width/height; the crop math above
-// handles that case correctly even though this overlay wouldn't.
+// maps the net template's region rectangles into the raw uploaded image's space (the
+// file as the user made it, before the hidden baseline correction), so outlines drawn
+// over the raw image line up with it. Only the fixed baselineRotate(+mirror) is undone.
 export function rawSpaceLayout(layout, opts) {
   const { totalW, totalH, regions } = layout;
   if ((opts?.baselineRotate || 0) !== 180) return layout;
@@ -152,45 +101,6 @@ export function rawSpaceLayout(layout, opts) {
     return { ...r, x, y };
   });
   return { totalW, totalH, regions: rawRegions };
-}
-
-export function extractFaceCanvas(img, region, netTotalW, netTotalH, transform) {
-  const { cropLeft, cropRight, cropTop, cropBottom } = cropFractions(transform);
-  const usableW = imgW(img) * Math.max(0.01, 1 - cropLeft - cropRight);
-  const usableH = imgH(img) * Math.max(0.01, 1 - cropTop - cropBottom);
-  const originX = imgW(img) * cropLeft;
-  const originY = imgH(img) * cropTop;
-  const pxPerMmX = usableW / netTotalW;
-  const pxPerMmY = usableH / netTotalH;
-
-  const sx = originX + region.x * pxPerMmX;
-  const sy = originY + region.y * pxPerMmY;
-  const sw = region.w * pxPerMmX;
-  const sh = region.h * pxPerMmY;
-
-  const totalRot = ((region.rotate % 360) + 360) % 360;
-  const swapped = totalRot === 90 || totalRot === 270;
-  const outW = Math.max(1, Math.round(swapped ? sh : sw));
-  const outH = Math.max(1, Math.round(swapped ? sw : sh));
-  // draw into exactly the rounded canvas size (not the fractional sw/sh) so adjacent
-  // faces never leave a sub-pixel gap/overlap at their shared edge
-  const destW = swapped ? outH : outW;
-  const destH = swapped ? outW : outH;
-
-  const canvas = document.createElement("canvas");
-  canvas.width = outW;
-  canvas.height = outH;
-  const ctx = canvas.getContext("2d");
-  // unprinted paper: anything the image doesn't cover (a trim reaching past the
-  // image, or a transparent PNG) would otherwise upload as transparent and render black
-  ctx.fillStyle = "#ffffff";
-  ctx.fillRect(0, 0, outW, outH);
-  ctx.save();
-  ctx.translate(outW / 2, outH / 2);
-  ctx.rotate((totalRot * Math.PI) / 180);
-  ctx.drawImage(img, sx, sy, sw, sh, -destW / 2, -destH / 2, destW, destH);
-  ctx.restore();
-  return canvas;
 }
 
 // `opts.maxPx` caps the canvas size (for on-screen thumbnails; the default is the

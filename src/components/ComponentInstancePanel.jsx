@@ -230,17 +230,20 @@ export default function ComponentInstancePanel({
         title="姿勢"
         collapsible
         defaultOpen={false}
-        summary={`${c.orientation === "standing" ? "縦置き" : "平置き"}${c.tiltX !== 0 || c.tiltZ !== 0 ? ` / 傾き ${c.tiltX}°,${c.tiltZ}°` : ""}`}
+        summary={[c.kind !== "die" && (c.orientation === "standing" ? "縦置き" : "平置き"), (c.tiltX !== 0 || c.tiltZ !== 0) && `傾き ${c.tiltX}°,${c.tiltZ}°`].filter(Boolean).join(" / ") || "傾きなし"}
       >
-        <SegmentedControl
-          value={c.orientation === "standing" ? "standing" : "lying"}
-          onChange={(v) => onUpdate({ orientation: v })}
-          options={[
-            { value: "standing", label: "縦置き" },
-            { value: "lying", label: "平置き" },
-          ]}
-        />
-        <div className="flex flex-col gap-2 mt-3">
+        {/* a cube has no standing/lying — only its tilt means anything */}
+        {c.kind !== "die" && (
+          <SegmentedControl
+            value={c.orientation === "standing" ? "standing" : "lying"}
+            onChange={(v) => onUpdate({ orientation: v })}
+            options={[
+              { value: "standing", label: "縦置き" },
+              { value: "lying", label: "平置き" },
+            ]}
+          />
+        )}
+        <div className={`flex flex-col gap-2 ${c.kind !== "die" ? "mt-3" : ""}`}>
           <ScrubField label="傾き(前後)" value={c.tiltX} onChange={(v) => onUpdate({ tiltX: v })} min={-45} max={45} unit="°" />
           <ScrubField label="傾き(左右)" value={c.tiltZ} onChange={(v) => onUpdate({ tiltZ: v })} min={-45} max={45} unit="°" />
         </div>

@@ -182,9 +182,8 @@ export default function PackageBoxMockup() {
   const [lightAzimuth, setLightAzimuth] = useState(49);
   const [lightElevation, setLightElevation] = useState(46);
   const [groundVisible, setGroundVisible] = useState(true);
-  const [exposure, setExposure] = useState(0.95);
+  const [exposure, setExposure] = useState(1);
   const [ambientBoost, setAmbientBoost] = useState(1);
-  const [toneMappingMode, setToneMappingMode] = useState("flat");
   const [sidebarWidth, setSidebarWidth] = useState(320);
   // inspector rail tab: オブジェクト(選択中の箱/コンポーネントの個別設定+箱の展開図画像) /
   // コンポーネント(ライブラリ) / 環境(アングル・背景・地面・ライティング・色補正など全体設定)
@@ -334,8 +333,13 @@ export default function PackageBoxMockup() {
     const camera = new THREE.PerspectiveCamera(35, 1, 0.1, 100);
     const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true, alpha: true });
     renderer.outputEncoding = THREE.sRGBEncoding;
-    renderer.toneMapping = THREE.NoToneMapping;
-    renderer.toneMappingExposure = 0.95;
+    // Linear tone mapping is a plain multiply by toneMappingExposure — the colours stay
+    // what the artwork says, and the 露出 slider has something to act on (under
+    // NoToneMapping exposure is ignored). It's set once here: tone mapping is compiled
+    // into every shader, so switching it at runtime silently did nothing until each
+    // material happened to recompile.
+    renderer.toneMapping = THREE.LinearToneMapping;
+    renderer.toneMappingExposure = 1;
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.style.width = "100%";
@@ -347,7 +351,7 @@ export default function PackageBoxMockup() {
     scene.add(ambient);
     t.ambient = ambient;
 
-    const key = new THREE.DirectionalLight(0xfff3e0, 1.35);
+    const key = new THREE.DirectionalLight(0xfff3e0, 0.6);
     key.position.set(3, 4.2, 2.6);
     key.castShadow = true;
     key.shadow.mapSize.set(2048, 2048);
@@ -357,11 +361,11 @@ export default function PackageBoxMockup() {
     scene.add(key.target);
     t.key = key;
 
-    const fill = new THREE.DirectionalLight(0xdce8ff, 0.45);
+    const fill = new THREE.DirectionalLight(0xdce8ff, 0.22);
     fill.position.set(-3, 1.6, -2);
     scene.add(fill);
 
-    const rim = new THREE.DirectionalLight(0xffffff, 0.5);
+    const rim = new THREE.DirectionalLight(0xffffff, 0.2);
     rim.position.set(-1.5, 2.5, -3.5);
     scene.add(rim);
 
@@ -972,7 +976,7 @@ export default function PackageBoxMockup() {
     componentInstances.forEach((inst) => {
       const rec = t.componentInstancesTHREE[inst.id];
       if (!rec) return;
-      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind, inst.pipColor].join("|");
+      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind, inst.pipColor, JSON.stringify(colorCorrection)].join("|");
       if (rec.appearanceKey === appearanceKey) return;
       rec.appearanceKey = appearanceKey;
 
@@ -988,7 +992,7 @@ export default function PackageBoxMockup() {
       }
 
       const faceAspect = inst.w / inst.d;
-      const canvas = buildComponentFaceCanvas(inst);
+      const canvas = applyColorCorrection(buildComponentFaceCanvas(inst), colorCorrection);
       const tex = new THREE.CanvasTexture(canvas);
       tex.encoding = THREE.sRGBEncoding;
       // aspect of the canvas actually uploaded — the CROPPED image, not the original
@@ -1017,7 +1021,7 @@ export default function PackageBoxMockup() {
         m.needsUpdate = true;
       });
     });
-  }, [componentInstances]);
+  }, [componentInstances, colorCorrection]);
 
   // ---- ground visibility ----
   useEffect(() => {
@@ -1066,7 +1070,9 @@ export default function PackageBoxMockup() {
       t.bgImageTexture.dispose();
       t.bgImageTexture = null;
     }
-    const baseAmbient = bgMode === "dark" ? 0.4 : 0.65;
+    // with the key/fill/rim above, a face lit from above sums to ≈1.0 — its artwork
+    // colour — instead of the old ≈2.2× that washed every print out toward white
+    const baseAmbient = bgMode === "dark" ? 0.26 : 0.42;
     if (bgMode === "image" && bgImage) {
       const tex = new THREE.Texture(bgImage);
       tex.encoding = THREE.sRGBEncoding;
@@ -1087,14 +1093,12 @@ export default function PackageBoxMockup() {
     if (t.ambient) t.ambient.intensity = baseAmbient * ambientBoost;
   }, [bgMode, bgImage, ambientBoost]);
 
-  // ---- exposure / tone mapping (color correction for printed textures) ----
+  // ---- exposure: a uniform, so it applies on the next frame without recompiling ----
   useEffect(() => {
     const t = three.current;
     if (!t.renderer) return;
     t.renderer.toneMappingExposure = exposure;
-    t.renderer.toneMapping =
-      toneMappingMode === "flat" ? THREE.NoToneMapping : THREE.ACESFilmicToneMapping;
-  }, [exposure, toneMappingMode]);
+  }, [exposure]);
 
   // ---- the selected box's net previews in the inspector: drawn against that box's
   // own type and dimensions, over its own uploaded sheets. UI-only canvases,
@@ -1634,7 +1638,10 @@ export default function PackageBoxMockup() {
     const fields = objectFieldsFromTemplate(item);
     const placement = Object.fromEntries(Object.keys(PLACEMENT_DEFAULTS).map((k) => [k, sel[k]]));
     if (item.objKind === kind) {
-      const next = { ...fields, ...placement, orientation: sel.orientation, id: sel.id };
+      // a die has no standing/lying control, so it never inherits (or passes on) a
+      // card's standing pose — it would be stuck on its side with no way back
+      const keepPose = fields.kind !== "die" && sel.kind !== "die";
+      const next = { ...fields, ...placement, orientation: keepPose ? sel.orientation : fields.orientation, id: sel.id };
       if (kind === "box") setBoxInstances((prev) => prev.map((b) => (b.id === sel.id ? next : b)));
       else setComponentInstances((prev) => prev.map((c) => (c.id === sel.id ? next : c)));
       return;
@@ -1693,7 +1700,6 @@ export default function PackageBoxMockup() {
       // of the uploaded file
       aspectW: c.w,
       aspectH: c.d,
-      regions: null,
       initialCrop: c.transform,
       setTransform: (updater) => updateComponentInstance(id, (cur) => ({ transform: updater(cur.transform) })),
     });
@@ -1765,6 +1771,23 @@ export default function PackageBoxMockup() {
   // underneath the dialog
   const modalOpenRef = useRef(false);
   modalOpenRef.current = !!(cropEditor || layoutEditor || exportSettingsOpen || confirmDialog);
+  // Esc closes the topmost dialog without applying (a field being typed into keeps Esc
+  // for itself — ScrubField uses it to cancel the edit)
+  useEffect(() => {
+    if (!modalOpenRef.current) return;
+    const onKey = (e) => {
+      if (e.key !== "Escape") return;
+      const ae = document.activeElement;
+      if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
+      e.preventDefault();
+      if (confirmDialog) setConfirmDialog(null);
+      else if (cropEditor) setCropEditor(null);
+      else if (layoutEditor) setLayoutEditor(null);
+      else setExportSettingsOpen(false);
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [cropEditor, layoutEditor, exportSettingsOpen, confirmDialog]);
 
   // ---- undo/redo history over the scene objects and the registered library — the
   // "what you actually did" layer, not every scene-wide setting. Snapshots are pushed
@@ -2409,41 +2432,19 @@ export default function PackageBoxMockup() {
           <div className="flex flex-col gap-2">
             <ScrubField label="光の向き" value={lightAzimuth} onChange={setLightAzimuth} min={-180} max={180} unit="°" />
             <ScrubField label="光の高さ" value={lightElevation} onChange={setLightElevation} min={10} max={80} unit="°" />
-          </div>
-        </Section>
-
-        {/* Split out of what used to be one "見え方の補正" card holding six fields and
-            three paragraphs. They're two different repairs for the same symptom and it
-            matters which you reach for: this one changes the LIGHT in the scene… */}
-        <Section
-          title="露出・トーン"
-          collapsible
-          defaultOpen={false}
-          summary={`${exposure.toFixed(2)} / ${toneMappingMode === "flat" ? "フラット" : "フィルム風"}`}
-          hint="環境光が強いと影が浅くなり色が白っぽく薄まって見えます。下げると発色が濃くなります。「フラット」は画像の色をそのまま出す原色重視のモードです(通常はこちらでOK)。「フィルム風」は明暗の差を強めてコントラストを付ける代わりに、色が少しくすみます。"
-        >
-          <div className="flex flex-col gap-2 mb-2.5">
             <ScrubField label="露出" value={exposure} onChange={setExposure} min={0.4} max={2} step={0.05} decimals={2} />
             <ScrubField label="環境光の強さ" value={ambientBoost} onChange={setAmbientBoost} min={0} max={2} step={0.05} decimals={2} />
           </div>
-          <SegmentedControl
-            value={toneMappingMode}
-            onChange={setToneMappingMode}
-            options={[
-              { value: "flat", label: "フラット" },
-              { value: "filmic", label: "フィルム風" },
-            ]}
-          />
         </Section>
 
-        {/* …and this one changes the IMAGE itself, after the lighting is already right. */}
+        {/* changes the IMAGE itself (every printed face: boxes, cards, tokens); the light is set above */}
         <Section
           title="色補正"
           meta="%"
           collapsible
           defaultOpen={false}
           summary={`${colorCorrection.saturation} / ${colorCorrection.contrast} / ${colorCorrection.brightness}`}
-          hint="露出・トーンはライティングの調整です。それでも印刷物より色が薄く見える場合は、ここで画像そのものの彩度・コントラストを直接補正できます。"
+          hint="箱・カード・トークンなど、すべての印刷面の画像そのものを補正します。光の当たり方(露出・環境光)は「ライティング」で調整します。"
         >
           <div className="flex flex-col gap-2">
             <ScrubField
@@ -2675,11 +2676,7 @@ export default function PackageBoxMockup() {
           img={cropEditor.img}
           aspectW={cropEditor.aspectW}
           aspectH={cropEditor.aspectH}
-          regions={cropEditor.regions}
-          regionLabel={(key) => cropEditor.regions?.find((r) => r.key === key)?.label || FACE_LABELS[key] || key}
           initialCrop={cropEditor.initialCrop}
-          guideColor={guideColor}
-          onGuideColorChange={setGuideColor}
           onCancel={() => setCropEditor(null)}
           onApply={(crop) => {
             cropEditor.setTransform((prev) => ({ ...prev, ...crop }));
