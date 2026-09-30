@@ -55,7 +55,11 @@ export function buttonStyle(role = "quiet", { active = false } = {}) {
     fontSize: "11px",
     borderRadius: "4px",
     padding: "4px 8px",
-    border: "1px solid transparent",
+    // longhands only: roles below override the color, and mixing the `border` shorthand
+    // with `borderColor` makes React drop the border when a button re-renders
+    borderWidth: "1px",
+    borderStyle: "solid",
+    borderColor: "transparent",
     transition: "background 120ms ease, color 120ms ease, border-color 120ms ease",
     cursor: "pointer",
   };

@@ -138,7 +138,8 @@ export function parseSvgToUnitShapes(svgText) {
 // can show its symbol on the top face only, a plain body color on the bottom + sides,
 // same visual convention as the card's face texturing.
 function splitCapGroups(geometry) {
-  const nonIndexed = geometry.toNonIndexed();
+  // ExtrudeGeometry is already non-indexed in r128; toNonIndexed() on it only warns
+  const nonIndexed = geometry.index ? geometry.toNonIndexed() : geometry.clone();
   const pos = nonIndexed.attributes.position;
   const normal = nonIndexed.attributes.normal;
   const triCount = pos.count / 3;

@@ -156,5 +156,8 @@ export function buildDieGeometry(c, scale) {
   merged.groups.forEach((g) => {
     if (g.materialIndex === 1) g.materialIndex = 2;
   });
+  // base on y = 0, like every other component (extruded shapes start at their base):
+  // built around its centre, a die with ground-snapping off sat half sunk in the floor
+  merged.translate(0, a / 2, 0);
   return merged;
 }

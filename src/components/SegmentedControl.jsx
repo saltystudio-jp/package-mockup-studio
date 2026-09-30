@@ -34,8 +34,10 @@ export default function SegmentedControl({ options, value, onChange, tone = "acc
               background: accentOn ? "var(--accent)" : selected ? "var(--row-selected)" : "transparent",
               color: accentOn ? "#1c1a17" : selected ? "var(--text-primary)" : "var(--text-secondary)",
               fontWeight: selected ? 600 : 400,
-              border: "none",
-              borderLeft: i === 0 ? "none" : "1px solid var(--border)",
+              // a divider on the left of every segment but the first (longhands, see ui.js)
+              borderStyle: "solid",
+              borderColor: "var(--border)",
+              borderWidth: i === 0 ? 0 : "0 0 0 1px",
               cursor: "pointer",
               transition: "background 120ms ease, color 120ms ease",
             }}
