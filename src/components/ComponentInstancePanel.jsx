@@ -6,6 +6,7 @@ import Section from "./Section.jsx";
 import SegmentedControl from "./SegmentedControl.jsx";
 import { buttonStyle, helpText, sectionMeta } from "../lib/ui.js";
 import { COMPONENT_SHAPE_KINDS } from "../lib/components.js";
+import { DIE_STYLES } from "../lib/dice.js";
 
 // Inspector for the selected card/token/piece. Everything about it is edited here —
 // shape and size included — since the object owns its own appearance; the library
@@ -27,6 +28,58 @@ export default function ComponentInstancePanel({
   const cropped = !!(t.cropTop || t.cropBottom || t.cropLeft || t.cropRight);
   return (
     <>
+      {c.kind === "die" ? (
+        <>
+      {/* a die has its own few controls: body style, one size, pip and body colors.
+          It has no image — the pips are its face. */}
+      <Section first title="ダイス" meta="mm">
+        <SegmentedControl
+          value={c.dieStyle || "rounded"}
+          onChange={(v) => onUpdate({ dieStyle: v })}
+          options={DIE_STYLES.map((d) => ({ value: d.key, label: d.label }))}
+        />
+        <div className="flex flex-col gap-2 mt-2.5">
+          <ScrubField
+            label="サイズ"
+            value={c.w}
+            onChange={(v) => {
+              const size = Math.max(2, v);
+              onUpdate({ w: size, d: size, thickness: size });
+            }}
+            min={2}
+            max={60}
+            step={0.5}
+            decimals={1}
+            unit="mm"
+          />
+          {c.dieStyle !== "ballcut" && (
+            <ScrubField
+              label="角の丸み"
+              value={c.cornerRadius}
+              onChange={(v) => onUpdate({ cornerRadius: Math.max(0, v) })}
+              min={0}
+              max={Math.max(0.5, c.w / 2)}
+              step={0.1}
+              decimals={1}
+              unit="mm"
+            />
+          )}
+        </div>
+        <div className="flex items-center gap-4 mt-3">
+          <label className="flex items-center gap-2" style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+            本体
+            <input type="color" value={c.color} onChange={(e) => onUpdate({ color: e.target.value })} style={{ width: "26px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer" }} />
+          </label>
+          <label className="flex items-center gap-2" style={{ fontSize: "11px", color: "var(--text-secondary)" }}>
+            目
+            <input type="color" value={c.pipColor || "#1c1a17"} onChange={(e) => onUpdate({ pipColor: e.target.value })} style={{ width: "26px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer" }} />
+          </label>
+        </div>
+      </Section>
+
+        </>
+      ) : (
+        <>
       <Section first title="形状" meta="mm">
         <div className="flex gap-1.5 mb-2.5">
           {COMPONENT_SHAPE_KINDS.map((k) => {
@@ -160,6 +213,9 @@ export default function ComponentInstancePanel({
           </div>
         </div>
       </Section>
+
+        </>
+      )}
 
       <Section title="配置" collapsible summary={`${Math.round(c.x)}, ${Math.round(c.z)} / ${Math.round(c.rotY)}°`}>
         <div className="flex flex-col gap-2">

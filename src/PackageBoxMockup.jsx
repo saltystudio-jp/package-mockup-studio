@@ -29,6 +29,7 @@ import {
 import { buildComponentFaceCanvas } from "./lib/components.js";
 import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
 import { resolveStacking } from "./lib/stacking.js";
+import { srgb, setSrgb } from "./lib/color.js";
 import {
   faceRegions,
   faceRects,
@@ -303,12 +304,12 @@ export default function PackageBoxMockup() {
   }, []);
 
   const plainMat = useCallback(
-    (hex) => new THREE.MeshStandardMaterial({ color: hex, roughness: 0.92, metalness: 0 }),
+    (hex) => new THREE.MeshStandardMaterial({ color: srgb(hex), roughness: 0.92, metalness: 0 }),
     []
   );
 
   const makeFaceMaterial = useCallback(() => {
-    return new THREE.MeshStandardMaterial({ color: 0xd8c9a8, roughness: 0.82, metalness: 0 });
+    return new THREE.MeshStandardMaterial({ color: srgb(0xd8c9a8), roughness: 0.82, metalness: 0 });
   }, []);
 
   // ---- init three.js once ----
@@ -365,7 +366,7 @@ export default function PackageBoxMockup() {
 
     const ground = new THREE.Mesh(
       new THREE.PlaneGeometry(40, 40),
-      new THREE.MeshStandardMaterial({ color: 0x1a1917, roughness: 1 })
+      new THREE.MeshStandardMaterial({ color: srgb(0x1a1917), roughness: 1 })
     );
     ground.rotation.x = -Math.PI / 2;
     ground.receiveShadow = true;
@@ -375,7 +376,7 @@ export default function PackageBoxMockup() {
     // boxes in a scene there's otherwise no way to tell which one the controls apply to
     const selectionMarker = new THREE.Mesh(
       new THREE.RingGeometry(0.94, 1, 64),
-      new THREE.MeshBasicMaterial({ color: 0x5fd3d9, transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false })
+      new THREE.MeshBasicMaterial({ color: srgb(0x5fd3d9), transparent: true, opacity: 0.85, side: THREE.DoubleSide, depthWrite: false })
     );
     selectionMarker.rotation.x = -Math.PI / 2;
     selectionMarker.renderOrder = 1;
@@ -441,6 +442,7 @@ export default function PackageBoxMockup() {
         c.cornerRadius,
         c.kind === "svg" ? c.svgText : "",
         c.kind === "alpha" ? `${imageKey(c.img)}:${JSON.stringify(c.transform)}` : "",
+        c.kind === "die" ? c.dieStyle : "",
       ].join("|");
     const syncComponentInstances = (items) => {
       const idSet = new Set(items.map((p) => p.id));
@@ -966,9 +968,20 @@ export default function PackageBoxMockup() {
     componentInstances.forEach((inst) => {
       const rec = t.componentInstancesTHREE[inst.id];
       if (!rec) return;
-      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind === "alpha"].join("|");
+      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind, inst.pipColor].join("|");
       if (rec.appearanceKey === appearanceKey) return;
       rec.appearanceKey = appearanceKey;
+
+      // dice: plain colors — pips in slot 0, body in slot 2 (see dice.js)
+      if (inst.kind === "die") {
+        rec.mats.forEach((m, i) => {
+          if (m.map) m.map.dispose();
+          m.map = null;
+          setSrgb(m.color, i === 0 ? inst.pipColor || "#1c1a17" : inst.color || COMPONENT_DEFAULTS.color);
+          m.needsUpdate = true;
+        });
+        return;
+      }
 
       const faceAspect = inst.w / inst.d;
       const canvas = buildComponentFaceCanvas(inst);
@@ -986,7 +999,7 @@ export default function PackageBoxMockup() {
       tex.offset.set(offset[0], offset[1]);
       tex.needsUpdate = true;
 
-      const bodyColor = new THREE.Color(inst.color || COMPONENT_DEFAULTS.color);
+      const bodyColor = srgb(inst.color || COMPONENT_DEFAULTS.color);
       rec.mats.forEach((m, i) => {
         if (m.map) m.map.dispose();
         if (i === 1) {
@@ -1061,7 +1074,7 @@ export default function PackageBoxMockup() {
       t.ground.material = new THREE.ShadowMaterial({ opacity: 0.22 });
     } else if (bgMode === "dark") {
       t.scene.background = t.darkBgTexture;
-      t.ground.material = new THREE.MeshStandardMaterial({ color: 0x1a1917, roughness: 1 });
+      t.ground.material = new THREE.MeshStandardMaterial({ color: srgb(0x1a1917), roughness: 1 });
     } else {
       // "white", or "image" mode before an image has been provided
       t.scene.background = new THREE.Color(0xf6f5f2);
@@ -1164,7 +1177,7 @@ export default function PackageBoxMockup() {
           mat.color.set(0xffffff);
         } else {
           mat.map = null;
-          mat.color.set(mat.userData.baseColor);
+          setSrgb(mat.color, mat.userData.baseColor);
         }
         mat.needsUpdate = true;
       });
@@ -2090,7 +2103,7 @@ export default function PackageBoxMockup() {
             kindLabel={
               selectedBox
                 ? BOX_TYPE_LABEL[selectedBox.boxType || "lidded"]
-                : { roundedSquare: "角丸四角", circle: "円", hexagon: "六角形", triangle: "三角形", svg: "SVG形状", alpha: "型抜き(画像の形)" }[selectedComponent.kind] || "コンポーネント"
+                : { roundedSquare: "角丸四角", circle: "円", hexagon: "六角形", triangle: "三角形", svg: "SVG形状", alpha: "型抜き(画像の形)", die: "ダイス" }[selectedComponent.kind] || "コンポーネント"
             }
             sizeText={(selectedBox ? [selectedBox.w, selectedBox.d, selectedBox.h] : [selectedComponent.w, selectedComponent.d, selectedComponent.thickness])
               .map((v) => Math.round(v * 10) / 10)

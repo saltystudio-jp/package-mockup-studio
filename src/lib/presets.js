@@ -47,12 +47,16 @@ export const COMPONENT_DEFAULTS = {
   img: null,
   fileName: "",
   transform: EMPTY_CROP,
+  // dice only (kind "die"): body shape and pip color
+  dieStyle: "rounded",
+  pipColor: "#1c1a17",
 };
 
 export const LIBRARY_GROUPS = [
   { key: "box", label: "箱" },
   { key: "card", label: "カード" },
   { key: "token", label: "トークン・駒" },
+  { key: "dice", label: "ダイス" },
   { key: "user", label: "登録済み" },
 ];
 
@@ -82,6 +86,15 @@ const tokenPreset = (key, name, kind, w, d, thickness, color, cornerRadius = 0) 
   template: { ...COMPONENT_DEFAULTS, kind, w, d, thickness, cornerRadius, color },
 });
 
+// a die is a cube: w = d = thickness = its side
+const diePreset = (key, name, size, dieStyle, color, pipColor, cornerRadius = 0) => ({
+  id: `preset:dice-${key}`,
+  name,
+  group: "dice",
+  objKind: "component",
+  template: { ...COMPONENT_DEFAULTS, kind: "die", w: size, d: size, thickness: size, dieStyle, color, pipColor, cornerRadius },
+});
+
 export const PRESET_ITEMS = [
   boxPreset("lidded", { w: 150, d: 150, h: 45, lidH: 20 }),
   boxPreset("caramel", { w: 68, d: 95, h: 22 }),
@@ -104,12 +117,20 @@ export const PRESET_ITEMS = [
   tokenPreset("hex30", "六角タイル 30", "hexagon", 30, 30, 2, BOARD_COLOR),
   tokenPreset("disc16", "木製ディスク 16", "circle", 16, 16, 5, WOOD_COLOR),
   tokenPreset("cube8", "木製キューブ 8", "roundedSquare", 8, 8, 8, WOOD_COLOR, 0.8),
+
+  diePreset("std16", "ダイス 16", 16, "rounded", "#f5f3ee", "#1c1a17", 1.6),
+  diePreset("std12", "ダイス 12", 12, "rounded", "#f5f3ee", "#1c1a17", 1.2),
+  diePreset("red16", "カラーダイス 16", 16, "rounded", "#c8322a", "#ffffff", 1.6),
+  diePreset("wood16", "木製ダイス 16", 16, "rounded", WOOD_COLOR, "#3b2414", 1.2),
+  diePreset("woodround16", "木製ダイス 丸面 16", 16, "ballcut", WOOD_COLOR, "#3b2414"),
+  diePreset("woodround20", "木製ダイス 丸面 20", 20, "ballcut", WOOD_COLOR, "#3b2414"),
 ];
 
 export function sizeLabel(item) {
   const t = item.template;
   const r = (v) => Math.round(v * 10) / 10;
-  return item.objKind === "box" ? `${r(t.w)}×${r(t.d)}×${r(t.h)}` : `${r(t.w)}×${r(t.d)}`;
+  if (item.objKind === "box") return `${r(t.w)}×${r(t.d)}×${r(t.h)}`;
+  return t.kind === "die" ? `${r(t.w)}mm` : `${r(t.w)}×${r(t.d)}`;
 }
 
 // snapshot of an object's appearance. Net slot objects are copied so later edits to

@@ -30,6 +30,7 @@
 import * as THREE from "three";
 import { RoundedBoxGeometry } from "three/examples/jsm/geometries/RoundedBoxGeometry.js";
 import { netLayout, singleFaceLayout, BODY_ORIENT, LID_ORIENT, DEFAULT_FACE_TRANSFORMS } from "./nets.js";
+import { srgb } from "./color.js";
 
 export const BOX_TYPES = [
   { key: "lidded", label: "身蓋" },
@@ -272,7 +273,7 @@ export function buildBoxModel(box, SCALE) {
   const hidden = new THREE.MeshBasicMaterial({ visible: false });
   materials.push(hidden);
   const plain = (color, extra) => {
-    const m = new THREE.MeshStandardMaterial({ color, roughness: 0.82, metalness: 0, ...extra });
+    const m = new THREE.MeshStandardMaterial({ color: srgb(color), roughness: 0.82, metalness: 0, ...extra });
     m.userData.baseColor = color;
     materials.push(m);
     return m;

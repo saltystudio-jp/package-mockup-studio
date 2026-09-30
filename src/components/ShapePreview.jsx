@@ -33,6 +33,24 @@ export default function ShapePreview({ component }) {
   if (!component) {
     return <div className="w-full h-full rounded" style={{ background: "var(--bg-surface-1)" }} />;
   }
+  // a die: its top face (the 5), with the body's outline — round for the ball-cut style
+  if (component.kind === "die") {
+    const round = component.dieStyle === "ballcut";
+    return (
+      <svg viewBox="0 0 40 40" width="100%" height="100%" aria-hidden="true">
+        <rect x="2" y="2" width="36" height="36" rx={round ? 18 : 7} fill={component.color} stroke="rgba(0,0,0,0.25)" />
+        {[
+          [12, 12],
+          [28, 12],
+          [20, 20],
+          [12, 28],
+          [28, 28],
+        ].map(([x, y], i) => (
+          <circle key={i} cx={x} cy={y} r={round ? 3 : 3.4} fill={component.pipColor || "#1c1a17"} />
+        ))}
+      </svg>
+    );
+  }
   // a die-cut IS its image's silhouette: the transparent PNG shows the shape by itself
   if (component.kind === "alpha" && thumb) {
     return <img src={thumb} alt={component.name} className="w-full h-full" style={{ objectFit: "contain" }} />;

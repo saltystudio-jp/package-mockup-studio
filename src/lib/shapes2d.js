@@ -13,6 +13,7 @@
 import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import { traceAlphaOutline } from "./alphaOutline.js";
+import { buildDieGeometry } from "./dice.js";
 
 // each preset is defined once in a normalized unit square (-0.5..0.5 on both axes) and
 // scaled to the piece's actual W/D at build time — so one definition works at any size.
@@ -229,6 +230,7 @@ export function buildComponentGeometry(component, scale) {
     const shape = parsed ? parsed.shapes : buildPresetShape("circle");
     return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
   }
+  if (component.kind === "die") return buildDieGeometry(component, scale);
   if (component.kind === "alpha") {
     // die-cut (トムソン): the image's own silhouette, in the whole image's unit frame
     // (see alphaOutline.js) — so W×D is the picture's size and the cut sits inside it
