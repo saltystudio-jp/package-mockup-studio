@@ -424,6 +424,24 @@ export function buildBoxModel(box, SCALE) {
     };
   }
 
+  // each printable face's size in mm along its texture's u and v — what a surface
+  // finish needs to keep its pattern at a true physical scale (see finish.js). For box
+  // geometry the material index says which pair of axes the face spans.
+  const faceMats = new Set(Object.values(faces).map((f) => f.mat));
+  group.traverse((o) => {
+    if (!o.isMesh) return;
+    o.geometry.computeBoundingBox();
+    const size = new THREE.Vector3();
+    o.geometry.boundingBox.getSize(size);
+    const [sx, sy, sz] = [size.x / S, size.y / S, size.z / S];
+    const mats = Array.isArray(o.material) ? o.material : [o.material];
+    mats.forEach((m, i) => {
+      if (!faceMats.has(m)) return;
+      if (!Array.isArray(o.material)) m.userData.sizeMm = [sx, sz]; // the tray's rim ring, lying flat
+      else m.userData.sizeMm = i < 2 ? [sz, sy] : i < 4 ? [sx, sz] : [sx, sy];
+    });
+  });
+
   return {
     group,
     measureObj,

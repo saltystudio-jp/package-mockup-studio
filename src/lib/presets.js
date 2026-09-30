@@ -33,6 +33,8 @@ export const BOX_DEFAULTS = {
   trayOut: 0,
   // net images, keyed by the slot keys from boxNetSlots(): { img, fileName, transform }
   nets: {},
+  // printed-surface finish: "matte" | "gloss" | "emboss" (see lib/finish.js)
+  finish: "matte",
 };
 
 export const COMPONENT_DEFAULTS = {

@@ -30,6 +30,7 @@ import { buildComponentFaceCanvas } from "./lib/components.js";
 import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
 import { resolveStacking } from "./lib/stacking.js";
 import { srgb, setSrgb } from "./lib/color.js";
+import { BOX_FINISHES, makeEnvMap, makeEmbossNormalMap, applyFinish } from "./lib/finish.js";
 import {
   faceRegions,
   faceRects,
@@ -484,6 +485,9 @@ export default function PackageBoxMockup() {
     t.scene = scene;
     t.camera = camera;
     t.renderer = renderer;
+    // shared by every box's surface finish (see finish.js)
+    t.envMap = makeEnvMap(renderer);
+    t.embossMap = makeEmbossNormalMap();
     t.allBoxesGroup = allBoxesGroup;
     t.instances = instances;
     t.ground = ground;
@@ -1183,6 +1187,22 @@ export default function PackageBoxMockup() {
       });
     });
   }, [boxInstances, colorCorrection]);
+
+  // ---- each box's surface finish on its printed faces. Kept apart from the texture
+  // effect: changing the finish never needs a re-slice, and a rebuilt model (new type or
+  // size) starts without a finishKey, so it always gets one. ----
+  useEffect(() => {
+    const t = three.current;
+    if (!t.instances || !t.envMap) return;
+    boxInstances.forEach((box) => {
+      const model = t.instances[box.id]?.model;
+      if (!model) return;
+      const finish = box.finish || "matte";
+      if (model.finishKey === finish) return;
+      model.finishKey = finish;
+      Object.values(model.faces).forEach(({ mat }) => applyFinish(mat, finish, { envMap: t.envMap, embossMap: t.embossMap }));
+    });
+  }, [boxInstances]);
 
   // ---- object editing ----
   const updateBox = (id, patch) =>
@@ -2193,6 +2213,19 @@ export default function PackageBoxMockup() {
           hint="ガイド画像を保存して、その上にデザインを配置した画像を入れてください。矢印は各面の絵柄の上方向です。のりしろ・差込部分は箱には表示されません。"
         >
           {renderNetSlots(selectedBox)}
+        </Section>
+
+        <Section
+          title="質感"
+          collapsible
+          summary={BOX_FINISHES.find((f) => f.key === (selectedBox.finish || "matte"))?.label}
+          hint="印刷面の仕上げです。グロスはラミネートのような光沢と映り込み、網目エンボスは布目状の細かな凹凸(0.8mmピッチ)を表現します。"
+        >
+          <SegmentedControl
+            value={selectedBox.finish || "matte"}
+            onChange={(v) => updateBox(selectedBox.id, { finish: v })}
+            options={BOX_FINISHES.map((f) => ({ value: f.key, label: f.label }))}
+          />
         </Section>
 
         <Section
