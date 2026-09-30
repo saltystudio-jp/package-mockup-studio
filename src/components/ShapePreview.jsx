@@ -33,6 +33,10 @@ export default function ShapePreview({ component }) {
   if (!component) {
     return <div className="w-full h-full rounded" style={{ background: "var(--bg-surface-1)" }} />;
   }
+  // a die-cut IS its image's silhouette: the transparent PNG shows the shape by itself
+  if (component.kind === "alpha" && thumb) {
+    return <img src={thumb} alt={component.name} className="w-full h-full" style={{ objectFit: "contain" }} />;
+  }
   if (component.kind === "svg") {
     return (
       <div

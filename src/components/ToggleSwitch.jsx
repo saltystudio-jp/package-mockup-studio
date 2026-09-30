@@ -10,10 +10,19 @@ export default function ToggleSwitch({ checked, onChange, label, disabled = fals
       style={{ cursor: disabled ? "default" : "pointer", opacity: disabled ? 0.5 : 1 }}
       onClick={() => !disabled && onChange(!checked)}
     >
+      {/* focusable and operable from the keyboard (Space / Enter), like a native
+          checkbox — before, the switch could only be clicked */}
       <span
         role="switch"
         aria-checked={checked}
         aria-disabled={disabled}
+        tabIndex={disabled ? -1 : 0}
+        onKeyDown={(e) => {
+          if (disabled || (e.key !== " " && e.key !== "Enter")) return;
+          e.preventDefault();
+          onChange(!checked);
+        }}
+        className="toggle-switch"
         style={{
           width: "36px",
           height: "20px",

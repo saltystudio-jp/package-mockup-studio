@@ -424,8 +424,17 @@ export default function PackageBoxMockup() {
     const allComponentsGroup = new THREE.Group();
     scene.add(allComponentsGroup);
     const componentInstancesTHREE = {};
+    // a die-cut's outline is traced from its image, so a new image or trim re-cuts it
     const componentShapeKey = (c) =>
-      [c.kind, c.w, c.d, c.thickness, c.cornerRadius, c.kind === "svg" ? c.svgText : ""].join("|");
+      [
+        c.kind,
+        c.w,
+        c.d,
+        c.thickness,
+        c.cornerRadius,
+        c.kind === "svg" ? c.svgText : "",
+        c.kind === "alpha" ? `${imageKey(c.img)}:${JSON.stringify(c.transform)}` : "",
+      ].join("|");
     const syncComponentInstances = (items) => {
       const idSet = new Set(items.map((p) => p.id));
       Object.keys(componentInstancesTHREE).forEach((key) => {
@@ -950,7 +959,7 @@ export default function PackageBoxMockup() {
     componentInstances.forEach((inst) => {
       const rec = t.componentInstancesTHREE[inst.id];
       if (!rec) return;
-      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d].join("|");
+      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind === "alpha"].join("|");
       if (rec.appearanceKey === appearanceKey) return;
       rec.appearanceKey = appearanceKey;
 
@@ -962,7 +971,10 @@ export default function PackageBoxMockup() {
       // file; using the original's aspect made every crop shift the art instead of
       // reframing it
       const texAspect = canvas.width / canvas.height;
-      const { repeat, offset } = coverFitRepeatOffset(texAspect, faceAspect);
+      // a die-cut's outline was traced from this exact picture and stretches with W×D
+      // just as the picture does, so it maps 1:1; cover-cropping it would pull the art
+      // off its own cut
+      const { repeat, offset } = inst.kind === "alpha" ? { repeat: [1, 1], offset: [0, 0] } : coverFitRepeatOffset(texAspect, faceAspect);
       tex.repeat.set(repeat[0], repeat[1]);
       tex.offset.set(offset[0], offset[1]);
       tex.needsUpdate = true;
@@ -1426,7 +1438,7 @@ export default function PackageBoxMockup() {
             }}
             disabled={exporting}
             className="flex-1 text-sm rounded py-2"
-            style={{ background: "#efe6d4", color: "#1c1a17", fontWeight: 600 }}
+            style={{ background: "var(--accent)", color: "#1c1a17", fontWeight: 600 }}
           >
             {exporting ? "書き出し中…" : "書き出す"}
           </button>
@@ -1638,10 +1650,15 @@ export default function PackageBoxMockup() {
   const patchSelectedComponent = (patch) => {
     if (selectedComponent) updateComponentInstance(selectedComponent.id, patch);
   };
+  // a die-cut keeps the new picture's proportions (its outline comes from the picture)
+  const newImagePatch = (img) =>
+    selectedComponent?.kind === "alpha"
+      ? { d: Math.round(((selectedComponent.w * imgH(img)) / imgW(img)) * 10) / 10 }
+      : {};
   const uploadComponentImage = (e) =>
-    readImageFile(e, (img, fileName) => patchSelectedComponent({ img, fileName, transform: EMPTY_CROP }));
+    readImageFile(e, (img, fileName) => patchSelectedComponent({ img, fileName, transform: EMPTY_CROP, ...newImagePatch(img) }));
   const pasteComponentImage = makePasteHandler((img) =>
-    patchSelectedComponent({ img, fileName: "(クリップボードから貼り付け)", transform: EMPTY_CROP })
+    patchSelectedComponent({ img, fileName: "(クリップボードから貼り付け)", transform: EMPTY_CROP, ...newImagePatch(img) })
   );
   const clearComponentImage = () => patchSelectedComponent({ img: null, fileName: "", transform: EMPTY_CROP });
   const openComponentCropEditor = () => {
@@ -1679,6 +1696,15 @@ export default function PackageBoxMockup() {
       updateComponentInstance(c.id, { kind: "svg", svgText, w, d });
     };
     reader.readAsText(file);
+  };
+  // die-cut (トムソン): cut the piece to the image's own silhouette. D is set from the
+  // trimmed picture's aspect so the art isn't stretched — the outline is traced in the
+  // picture's frame and scales with W×D exactly as the picture does.
+  const dieCutComponent = () => {
+    const c = selectedComponent;
+    if (!c?.img) return;
+    const cropped = cropToCanvas(c.img, c.transform);
+    updateComponentInstance(c.id, { kind: "alpha", d: Math.round(((c.w * cropped.height) / cropped.width) * 10) / 10 });
   };
   // best-guess shape (circle vs. rounded-rect) + corner radius from the image's alpha
   // channel — see detectAlphaShapeKind/detectAlphaCornerRadiusPx in imaging.js
@@ -1888,6 +1914,10 @@ export default function PackageBoxMockup() {
         /* the layer list's delete affordance is hover/selection-revealed (see
            Outliner.jsx); keyboard focus has to reveal it too or it becomes
            mouse-only */
+        .toggle-switch:focus-visible {
+          outline: 2px solid var(--highlight);
+          outline-offset: 2px;
+        }
         .outliner-remove:focus-visible {
           opacity: 1 !important;
           outline: 1px solid var(--highlight);
@@ -2071,7 +2101,7 @@ export default function PackageBoxMockup() {
             kindLabel={
               selectedBox
                 ? BOX_TYPE_LABEL[selectedBox.boxType || "lidded"]
-                : { roundedSquare: "角丸四角", circle: "円", hexagon: "六角形", triangle: "三角形", svg: "SVG形状" }[selectedComponent.kind] || "コンポーネント"
+                : { roundedSquare: "角丸四角", circle: "円", hexagon: "六角形", triangle: "三角形", svg: "SVG形状", alpha: "型抜き(画像の形)" }[selectedComponent.kind] || "コンポーネント"
             }
             sizeText={(selectedBox ? [selectedBox.w, selectedBox.d, selectedBox.h] : [selectedComponent.w, selectedComponent.d, selectedComponent.thickness])
               .map((v) => Math.round(v * 10) / 10)
@@ -2244,6 +2274,7 @@ export default function PackageBoxMockup() {
           onOpenCropEditor={openComponentCropEditor}
           onAutoDetectShape={autoDetectComponentShape}
           onSetSvgShape={setComponentSvgShape}
+          onDieCut={dieCutComponent}
         />
         )}
         </>

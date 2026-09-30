@@ -21,6 +21,7 @@ export default function ComponentInstancePanel({
   onOpenCropEditor,
   onAutoDetectShape,
   onSetSvgShape,
+  onDieCut,
 }) {
   const t = c.transform || {};
   const cropped = !!(t.cropTop || t.cropBottom || t.cropLeft || t.cropRight);
@@ -66,7 +67,32 @@ export default function ComponentInstancePanel({
               }}
             />
           </label>
+          {/* die-cut: the outline of the image itself — needs an image with transparency */}
+          <button
+            onClick={onDieCut}
+            disabled={!c.img}
+            aria-pressed={c.kind === "alpha"}
+            title={c.img ? "画像の輪郭(透過部分)で型抜き — トムソン加工" : "型抜きには透過PNGの画像が必要です"}
+            className="flex-1 rounded flex items-center justify-center"
+            style={{
+              height: "32px",
+              fontSize: "10px",
+              fontWeight: 600,
+              background: "var(--bg-well)",
+              border: c.kind === "alpha" ? "2px solid var(--accent)" : "1px solid var(--border-well)",
+              color: c.kind === "alpha" ? "var(--accent)" : "var(--text-muted)",
+              opacity: c.img ? 1 : 0.4,
+              cursor: c.img ? "pointer" : "default",
+            }}
+          >
+            型抜き
+          </button>
         </div>
+        {c.kind === "alpha" && (
+          <p className="mb-2.5" style={helpText}>
+            画像の透過部分に沿って型抜きしています。画像やトリミングを変えると形も追従します。
+          </p>
+        )}
         <div className="flex flex-col gap-2">
           <ScrubField label="幅 W" value={c.w} onChange={(v) => onUpdate({ w: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
           <ScrubField label="奥行 D" value={c.d} onChange={(v) => onUpdate({ d: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />

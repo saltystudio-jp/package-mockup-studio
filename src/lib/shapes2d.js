@@ -12,6 +12,7 @@
 // otherwise identical downstream.
 import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
+import { traceAlphaOutline } from "./alphaOutline.js";
 
 // each preset is defined once in a normalized unit square (-0.5..0.5 on both axes) and
 // scaled to the piece's actual W/D at build time — so one definition works at any size.
@@ -112,10 +113,14 @@ export function parseSvgToUnitShapes(svgText) {
 
   const w = Math.max(1e-6, bounds.maxX - bounds.minX);
   const h = Math.max(1e-6, bounds.maxY - bounds.minY);
-  const scale = 1 / Math.max(w, h);
   const cx = (bounds.minX + bounds.maxX) / 2;
   const cy = (bounds.minY + bounds.maxY) / 2;
-  const norm = (p) => new THREE.Vector2((p.x - cx) * scale, -(p.y - cy) * scale);
+  // each axis normalized to span exactly 1, like the presets' unit square: the piece's
+  // W and D then set the real size per axis. (Normalizing both by the longer side, as
+  // before, left a wide outline spanning only 1/aspect of the unit height — and D,
+  // already set to W/aspect, shrank it by the aspect a second time: a 2:1 SVG came out
+  // 4:1.)
+  const norm = (p) => new THREE.Vector2((p.x - cx) / w, -(p.y - cy) / h);
 
   const shapes = rawShapes.map((s) => {
     const outer = new THREE.Shape(s.getPoints(SAMPLES).map(norm));
@@ -164,7 +169,9 @@ function splitCapGroups(geometry) {
 // caps to 0..1 across the shape's own bounding box makes the image span the whole face,
 // with u along x and v along y (which becomes "toward the back" once the piece is laid
 // flat) — the frame the cover-fit repeat/offset in the texture effect assumes.
-function normalizeCapUVs(geometry) {
+// `frame` overrides that box: a die-cut maps its image to the whole picture's frame,
+// not to the cut's own (smaller) outline, so the art stays registered to the cut.
+function normalizeCapUVs(geometry, frame) {
   const pos = geometry.attributes.position;
   const normal = geometry.attributes.normal;
   const uv = geometry.attributes.uv;
@@ -178,6 +185,7 @@ function normalizeCapUVs(geometry) {
     minY = Math.min(minY, pos.getY(i));
     maxY = Math.max(maxY, pos.getY(i));
   }
+  if (frame) ({ minX, maxX, minY, maxY } = frame);
   const w = Math.max(1e-9, maxX - minX);
   const h = Math.max(1e-9, maxY - minY);
   for (let i = 0; i < pos.count; i++) {
@@ -192,11 +200,11 @@ function normalizeCapUVs(geometry) {
 // rotate so the thin axis lies along world Y (thickness "up") with the footprint on
 // XZ — matching the box/card convention of "lying flat by default, groundSnapY measures
 // the actual bounding box afterward regardless of local geometry offset".
-export function buildExtrudedPieceGeometry(shape, { widthUnits, depthUnits, thicknessUnits, curveSegments = 32 }) {
+export function buildExtrudedPieceGeometry(shape, { widthUnits, depthUnits, thicknessUnits, curveSegments = 32, uvFrame }) {
   const geo = new THREE.ExtrudeGeometry(shape, { depth: 1, bevelEnabled: false, curveSegments });
   const split = splitCapGroups(geo);
   geo.dispose();
-  normalizeCapUVs(split);
+  normalizeCapUVs(split, uvFrame);
   split.scale(widthUnits, depthUnits, thicknessUnits);
   split.rotateX(-Math.PI / 2);
   return split;
@@ -220,6 +228,28 @@ export function buildComponentGeometry(component, scale) {
     const parsed = parseSvgToUnitShapes(component.svgText);
     const shape = parsed ? parsed.shapes : buildPresetShape("circle");
     return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
+  }
+  if (component.kind === "alpha") {
+    // die-cut (トムソン): the image's own silhouette, in the whole image's unit frame
+    // (see alphaOutline.js) — so W×D is the picture's size and the cut sits inside it
+    // exactly where the opaque art is. No image (or nothing transparent to cut along)
+    // falls back to the plain rectangle.
+    const outline = traceAlphaOutline(component.img, component.transform);
+    if (outline) {
+      const v = ([x, y]) => new THREE.Vector2(x, y);
+      const shapes = outline.shapes.map(({ outer, holes }) => {
+        const sh = new THREE.Shape(outer.map(v));
+        sh.holes = holes.map((h) => new THREE.Path(h.map(v)));
+        return sh;
+      });
+      return buildExtrudedPieceGeometry(shapes, {
+        widthUnits: w,
+        depthUnits: d,
+        thicknessUnits: thickness,
+        uvFrame: { minX: -0.5, maxX: 0.5, minY: -0.5, maxY: 0.5 },
+      });
+    }
+    return buildExtrudedPieceGeometry(roundedRectShape(1, 1, 0), { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
   }
   const shape = buildPresetShape(component.kind);
   return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
