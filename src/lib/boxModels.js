@@ -46,7 +46,11 @@ const TRAY_FLOOR = 2; // mm
 const GLUE = 12; // mm — のりしろ
 const TUCK = 15; // mm — 差し込み
 
-const PRINT_BASE = 0xdccbaa; // fallback for a printable face that has no art yet
+// fallback for a printable face that has no art yet: a light neutral grey, so a plain
+// box still reads against the white product-shot background (the old beige didn't)
+const PRINT_BASE = 0xc4c6c9;
+const LID_BASE = 0xd2d4d7; // a step lighter, so lid and body are told apart before any art
+const LID_BOARD = 1.5; // mm — the lid's board thickness: its top sits this far above the body's
 const BOARD_INSIDE = 0xebe5d8; // raw board: surfaces that are never printed
 
 // the tray is derived from the sleeve rather than sized independently — it has to fit
@@ -384,22 +388,26 @@ export function buildBoxModel(box, SCALE) {
     const body = mesh(new RoundedBoxGeometry(bw, bh, bd, ROUND_SEGMENTS, radius), [
       face("body-right", PRINT_BASE, DEFAULT_FACE_TRANSFORMS["body-right"]),
       face("body-left", PRINT_BASE, DEFAULT_FACE_TRANSFORMS["body-left"]),
-      plain(0xcbb98f, { roughness: 0.92 }), // open top of the body: covered by the lid, never printed
+      plain(0xb6b8bb, { roughness: 0.92 }), // open top of the body: covered by the lid, never printed
       face("body-center", PRINT_BASE, DEFAULT_FACE_TRANSFORMS["body-center"]),
       face("body-front", PRINT_BASE, DEFAULT_FACE_TRANSFORMS["body-front"]),
       face("body-back", PRINT_BASE, DEFAULT_FACE_TRANSFORMS["body-back"]),
     ]);
     body.position.y = bh / 2;
-    const lidBase = 0xead9b6;
+    const lidBase = LID_BASE;
     const lid = mesh(new RoundedBoxGeometry(lw, lh, ld, ROUND_SEGMENTS, radius), [
       face("lid-right", lidBase, DEFAULT_FACE_TRANSFORMS["lid-right"]),
       face("lid-left", lidBase, DEFAULT_FACE_TRANSFORMS["lid-left"]),
       face("lid-center", lidBase, DEFAULT_FACE_TRANSFORMS["lid-center"]),
-      face("lid-inner", 0xe8ddc4, DEFAULT_FACE_TRANSFORMS["lid-inner"]),
+      face("lid-inner", 0xe1e2e4, DEFAULT_FACE_TRANSFORMS["lid-inner"]),
       face("lid-front", lidBase, DEFAULT_FACE_TRANSFORMS["lid-front"]),
       face("lid-back", lidBase, DEFAULT_FACE_TRANSFORMS["lid-back"]),
     ]);
-    const lidClosedY = bh - lh / 2;
+    // closed, the lid rests ON the body: its top is one board thickness above the
+    // body's top. With the two tops in the same plane (as before) the lid and body
+    // surfaces fought over the same pixels and the top shimmered.
+    const lidTop = bh + LID_BOARD * S;
+    const lidClosedY = lidTop - lh / 2;
     const lidLift = bh * 1.4 + lh;
     lid.position.y = lidClosedY;
     group.add(body, lid);
@@ -411,11 +419,11 @@ export function buildBoxModel(box, SCALE) {
     // nothing, and carries no instanceId, so picking and drops never hit it.
     // (a lid deeper than the body — a full-telescope box — hangs below the body's base,
     // so the proxy reaches down to the lid's lower edge in that case)
-    const restH = Math.max(bh, lh);
+    const restH = Math.max(lidTop, lh);
     const restGeo = new THREE.BoxGeometry(Math.max(bw, lw), restH, Math.max(bd, ld));
     geometries.push(restGeo);
     const rest = new THREE.Mesh(restGeo, hidden);
-    rest.position.y = bh - restH / 2;
+    rest.position.y = lidTop - restH / 2;
     rest.userData.restProxy = true;
     group.add(rest);
     measureObj = rest;

@@ -10,6 +10,7 @@ import NetLayoutEditor from "./components/NetLayoutEditor.jsx";
 import ToggleSwitch from "./components/ToggleSwitch.jsx";
 import Section from "./components/Section.jsx";
 import SegmentedControl from "./components/SegmentedControl.jsx";
+import DimensionFields from "./components/DimensionFields.jsx";
 import useClickOutside from "./hooks/useClickOutside.js";
 import { sectionTitle, sectionMeta, helpText, buttonStyle } from "./lib/ui.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, THEME_STORAGE_KEY } from "./lib/theme.js";
@@ -529,11 +530,36 @@ export default function PackageBoxMockup() {
       if (!fullBox || fullBox.isEmpty()) return;
       t.center.set((fullBox.min.x + fullBox.max.x) / 2, (fullBox.min.y + fullBox.max.y) / 2, (fullBox.min.z + fullBox.max.z) / 2);
       t.pan.set(0, 0, 0);
-      if (t.shadowRadius && t.camera) {
-        const halfV = (t.camera.fov * Math.PI) / 360;
-        const halfH = Math.atan(Math.tan(halfV) * t.camera.aspect);
-        t.radius = (t.shadowRadius / Math.min(Math.sin(halfV), Math.sin(halfH))) * 1.05;
+      // the closest distance at which every corner of the scene's bounds is in frame,
+      // from the current viewing angle (a bounding sphere, as before, framed loosely —
+      // the scene filled about half the view)
+      const cam = t.camera;
+      const corners = [];
+      [fullBox.min.x, fullBox.max.x].forEach((x) =>
+        [fullBox.min.y, fullBox.max.y].forEach((y) => [fullBox.min.z, fullBox.max.z].forEach((z) => corners.push(new THREE.Vector3(x, y, z))))
+      );
+      const v = new THREE.Vector3();
+      const fits = (r) => {
+        cam.position.set(
+          t.center.x + r * Math.sin(t.azimuth) * Math.cos(t.elevation),
+          t.center.y + r * Math.sin(t.elevation) + 0.3,
+          t.center.z + r * Math.cos(t.azimuth) * Math.cos(t.elevation)
+        );
+        cam.lookAt(t.center);
+        cam.updateMatrixWorld();
+        return corners.every((c) => {
+          v.copy(c).project(cam);
+          return v.z < 1 && Math.abs(v.x) <= 0.8 && Math.abs(v.y) <= 0.8;
+        });
+      };
+      let lo = 0.4;
+      let hi = 40;
+      for (let i = 0; i < 30; i++) {
+        const mid = (lo + hi) / 2;
+        if (fits(mid)) hi = mid;
+        else lo = mid;
       }
+      t.radius = hi;
     };
 
     const raycaster = new THREE.Raycaster();
@@ -789,6 +815,8 @@ export default function PackageBoxMockup() {
     const initialFitTimer = setTimeout(() => {
       artboardFittedRef.current = true;
       initialFitRo.disconnect();
+      // frame the starting scene once the artboard has its final shape
+      setTimeout(() => t.resetCameraView?.(), 50);
     }, 400);
 
     let raf;
@@ -1533,6 +1561,28 @@ export default function PackageBoxMockup() {
 
   // ---- the selected box's fields, for the inspector ----
   const displayValue = (key) => selectedBox?.[key];
+  // which of 幅/奥行/高さ have their ratio locked (the chain toggles) — a UI setting,
+  // shared by the inspector and the net layout editor
+  const [linkedDims, setLinkedDims] = useState(() => new Set());
+  const toggleLinkedDim = (key) =>
+    setLinkedDims((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  const boxDimFields = (box) =>
+    box.boxType === "sleeve"
+      ? [
+          { key: "w", label: "長さ(引き出す向き)", max: 500 },
+          { key: "d", label: "幅", max: 500 },
+          { key: "h", label: "厚み", max: 500 },
+        ]
+      : [
+          { key: "w", label: "幅 W", max: 500 },
+          { key: "d", label: "奥行 D", max: 500 },
+          { key: "h", label: "高さ H", max: 500 },
+        ];
   const setParamValue = (key, value) => {
     if (selectedBox) updateBox(selectedBox.id, { [key]: value });
   };
@@ -2258,9 +2308,13 @@ export default function PackageBoxMockup() {
               what they are for that box: its length (the pull direction), width and
               thickness */}
           <div className="flex flex-col gap-2">
-            {instanceNumField(selectedBox.boxType === "sleeve" ? "長さ(引き出す向き)" : "幅 W", "w", 1, 500, "mm")}
-            {instanceNumField(selectedBox.boxType === "sleeve" ? "幅" : "奥行 D", "d", 1, 500, "mm")}
-            {instanceNumField(selectedBox.boxType === "sleeve" ? "厚み" : "高さ H", "h", 1, 500, "mm")}
+            <DimensionFields
+              fields={boxDimFields(selectedBox)}
+              values={{ w: selectedBox.w, d: selectedBox.d, h: selectedBox.h }}
+              linked={linkedDims}
+              onToggleLink={toggleLinkedDim}
+              onChange={(dims) => updateBox(selectedBox.id, dims)}
+            />
             {/* the sleeve is built from flat panels (open ends), so there's no edge to round */}
             {selectedBox.boxType !== "sleeve" &&
               instanceNumField("角の丸み", "bevelRadius", 0, 10, "mm", { step: 0.5, decimals: 1 })}
@@ -2410,6 +2464,7 @@ export default function PackageBoxMockup() {
             selectedName={selectedObject ? selectedObject.name || (selectedBox ? BOX_TYPE_LABEL[selectedBox.boxType || "lidded"] : "コンポーネント") : null}
             onPlace={(item) => placeFromLibrary(item)}
             onReplace={replaceSelected}
+            onRegister={registerSelected}
             onRename={renameUserComponent}
             onRemove={removeUserComponent}
             dragType={LIBRARY_DRAG_TYPE}
@@ -2750,24 +2805,38 @@ export default function PackageBoxMockup() {
           const display = displayImage(net);
           const dw = imgW(display);
           const dh = imgH(display);
+          // the editor can resize the box: everything it needs is a function of the dims
+          const isLidded = (box.boxType || "lidded") === "lidded";
+          const dimFields = [...boxDimFields(box), ...(isLidded ? [{ key: "lidH", label: "蓋の高さ", max: 200 }] : [])];
+          const dims = Object.fromEntries(dimFields.map((f) => [f.key, box[f.key]]));
+          const slotFor = (d) => boxNetSlots({ ...box, ...d }).find((x) => x.key === slot.key);
           return (
             <NetLayoutEditor
               title={`面の配置 — ${slot.label}`}
               image={display}
-              faces={faceRegions(slot).map((r) => ({
-                key: r.key,
-                label: r.label || FACE_LABELS[r.key] || r.key,
-                wMm: r.w,
-                hMm: r.h,
-                arrowRotate: r.arrowRotate || 0,
-              }))}
+              facesFor={(d) =>
+                faceRegions(slotFor(d)).map((r) => ({
+                  key: r.key,
+                  label: r.label || FACE_LABELS[r.key] || r.key,
+                  wMm: r.w,
+                  hMm: r.h,
+                  tx: r.x + r.w / 2,
+                  ty: r.y + r.h / 2,
+                  arrowRotate: r.arrowRotate || 0,
+                }))
+              }
+              dims={dims}
+              dimFields={dimFields}
+              linked={linkedDims}
+              onToggleLink={toggleLinkedDim}
               layout={net.faceLayout || defaultFaceLayout(slot, net, dw, dh)}
               // "template" reset ignores any old whole-net trim: the template fitted to the image
-              defaultLayout={defaultFaceLayout(slot, { ...net, transform: { rotate: net.transform?.rotate || 0 } }, dw, dh)}
+              defaultLayoutFor={(d) => defaultFaceLayout(slotFor(d), { ...net, transform: { rotate: net.transform?.rotate || 0 } }, dw, dh)}
               guideColor={guideColor}
               onGuideColorChange={setGuideColor}
               onCancel={() => setLayoutEditor(null)}
-              onApply={(faceLayout) => {
+              onApply={(faceLayout, nextDims) => {
+                updateBox(box.id, nextDims);
                 setBoxNet(box.id, slot.key, { faceLayout });
                 setLayoutEditor(null);
               }}

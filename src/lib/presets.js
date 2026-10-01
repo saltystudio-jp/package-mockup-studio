@@ -20,10 +20,10 @@ const WOOD_COLOR = "#d6a867";
 export const BOX_DEFAULTS = {
   boxType: "lidded",
   orientation: "standing",
-  w: 150,
-  d: 150,
-  h: 45,
-  lidH: 20,
+  w: 297,
+  d: 210,
+  h: 70,
+  lidH: 60,
   clearance: 2,
   bevelRadius: 2,
   lidOpen: 0,
@@ -98,7 +98,8 @@ const diePreset = (key, name, size, dieStyle, color, pipColor, cornerRadius = 0)
 });
 
 export const PRESET_ITEMS = [
-  boxPreset("lidded", { w: 150, d: 150, h: 45, lidH: 20 }),
+  // a typical A4-footprint board-game box: a deep lid over a slightly taller body
+  boxPreset("lidded", { w: 297, d: 210, h: 70, lidH: 60 }),
   boxPreset("caramel", { w: 68, d: 95, h: 22 }),
   boxPreset("sleeve", { w: 150, d: 100, h: 40 }),
 
