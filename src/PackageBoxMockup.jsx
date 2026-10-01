@@ -11,6 +11,7 @@ import ToggleSwitch from "./components/ToggleSwitch.jsx";
 import Section from "./components/Section.jsx";
 import SegmentedControl from "./components/SegmentedControl.jsx";
 import DimensionFields from "./components/DimensionFields.jsx";
+import ModalBackdrop from "./components/ModalBackdrop.jsx";
 import useClickOutside from "./hooks/useClickOutside.js";
 import { sectionTitle, sectionMeta, helpText, buttonStyle } from "./lib/ui.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, THEME_STORAGE_KEY } from "./lib/theme.js";
@@ -1456,7 +1457,7 @@ export default function PackageBoxMockup() {
   const exportOutW = Math.round(artboardW * exportScale);
   const exportOutH = Math.round(artboardH * exportScale);
   const exportSettingsDialog = exportSettingsOpen && (
-    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)", zIndex: 50 }}>
+    <ModalBackdrop onDismiss={() => setExportSettingsOpen(false)}>
       <div className="rounded-lg p-4" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", width: "340px" }}>
         <div className="text-sm font-semibold mb-3" style={{ color: "var(--text-primary)" }}>
           書き出し設定
@@ -1503,7 +1504,7 @@ export default function PackageBoxMockup() {
           </button>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 
   // resizable panel dividers: sidebar width (drag right edge) and bottom bar height
@@ -2765,7 +2766,7 @@ export default function PackageBoxMockup() {
       {exportSettingsDialog}
 
       {confirmDialog && (
-        <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)", zIndex: 60 }}>
+        <ModalBackdrop zIndex={60} onDismiss={() => setConfirmDialog(null)}>
           <div className="rounded-lg p-4" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", width: "340px" }}>
             <div className="text-sm font-semibold mb-2" style={{ color: "var(--text-primary)" }}>
               {confirmDialog.title}
@@ -2793,7 +2794,7 @@ export default function PackageBoxMockup() {
               </button>
             </div>
           </div>
-        </div>
+        </ModalBackdrop>
       )}
 
       {layoutEditor &&

@@ -2,6 +2,7 @@ import React, { useEffect, useRef, useState } from "react";
 import { imgW, imgH } from "../lib/imaging.js";
 import ScrubField from "./ScrubField.jsx";
 import ToggleSwitch from "./ToggleSwitch.jsx";
+import ModalBackdrop from "./ModalBackdrop.jsx";
 import { sectionTitle, sectionMeta, buttonStyle } from "../lib/ui.js";
 import { DEFAULT_GUIDE_COLOR } from "../lib/nets.js";
 
@@ -186,7 +187,7 @@ export default function CropEditorModal({
   );
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)", zIndex: 50 }}>
+    <ModalBackdrop onDismiss={onCancel}>
       <div
         className="rounded-lg p-4 flex gap-4"
         style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", maxWidth: "calc(100vw - 32px)" }}
@@ -316,6 +317,6 @@ export default function CropEditorModal({
           </div>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }

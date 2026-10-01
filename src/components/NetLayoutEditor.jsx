@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from "react";
 import { imgW, imgH, hexToRgba } from "../lib/imaging.js";
 import ToggleSwitch from "./ToggleSwitch.jsx";
+import ModalBackdrop from "./ModalBackdrop.jsx";
 import ScrubField from "./ScrubField.jsx";
 import SegmentedControl from "./SegmentedControl.jsx";
 import DimensionFields from "./DimensionFields.jsx";
@@ -20,7 +21,9 @@ const MIN_DIM = 5; // mm
 // resize the box itself while doing it.
 //
 //  - Click a face to select it; Shift-click adds/removes; drag on empty space draws a
-//    selection box (範囲選択). Dragging any selected face moves the whole selection.
+//    selection box (範囲選択), and a click outside the selected faces clears it.
+//    Dragging any selected face moves the whole selection; with several selected, the
+//    corners of the selection's outline scale it (the print scale) about the opposite corner.
 //  - Handles on the one selected face, in one of two modes:
 //      箱のサイズ — edges and corners resize the BOX: the face's width/height maps to
 //                   whichever box dimension produces it (found numerically from the
@@ -155,10 +158,11 @@ export default function NetLayoutEditor({
   // ---- geometry steps ----
   const joinedTo = (key, st = state) => connectedFaces(rectsOf(st), key, Math.max(1, 0.3 * st.pxPerMm));
 
-  // one print-scale step for the whole sheet: faces joined to `key` scale around its
-  // centre (and stay joined); every other face scales in place around its own
-  function scaled(st0, key, s, group) {
-    const [cx, cy] = st0.centers[key];
+  // one print-scale step for the whole sheet: faces in `group` (joined to the face being
+  // scaled, or the selection) scale around `pivot` and keep their arrangement; every
+  // other face scales in place around its own centre
+  function scaled(st0, pivot, s, group) {
+    const [cx, cy] = pivot;
     const centersNext = { ...st0.centers };
     group.forEach((k) => {
       const [x, y] = st0.centers[k];
@@ -213,11 +217,21 @@ export default function NetLayoutEditor({
     return out;
   };
   const handlePos = (r, [hx, hy]) => [r.x + ((hx + 1) / 2) * r.w, r.y + ((hy + 1) / 2) * r.h];
+  // what the handles are on: the one selected face, or — with several selected — the
+  // selection's outline, whose corners scale the selection (拡大縮小) in either mode
+  const handleTarget = () => {
+    if (selection.size > 1 && selBox) {
+      return { multi: true, rect: { x: selBox.x, y: selBox.y, w: selBox.x1 - selBox.x, h: selBox.y1 - selBox.y }, handles: [[-1, -1], [1, -1], [-1, 1], [1, 1]] };
+    }
+    if (single) return { multi: false, rect: rects[single], handles: handlesOf(single) };
+    return null;
+  };
   const hitHandle = (ix, iy) => {
-    if (!single) return null;
-    const r = rects[single];
+    const tgt = handleTarget();
+    if (!tgt) return null;
+    const r = tgt.rect;
     const tol = (HANDLE_PX + 3) / view.v;
-    return handlesOf(single).find((h) => {
+    return tgt.handles.find((h) => {
       const [px, py] = handlePos(r, h);
       return Math.abs(ix - px) <= tol && Math.abs(iy - py) <= tol;
     });
@@ -241,12 +255,22 @@ export default function NetLayoutEditor({
     }
     const handle = hitHandle(ix, iy);
     if (handle) {
+      const tgt = handleTarget();
+      if (tgt.multi) {
+        // the selection scales about its opposite corner, like any design tool
+        const group = new Set(selection);
+        setLinkedFaces(group);
+        const c = handlePos(tgt.rect, [-handle[0], -handle[1]]);
+        const [px, py] = handlePos(tgt.rect, handle);
+        dragRef.current = { mode: "scale", state0: state, rects0: rects, box: tgt.rect, group, c, s0: [px - c[0], py - c[1]] };
+        return;
+      }
       const group = joinedTo(single);
       setLinkedFaces(group);
       if (handleMode === "scale") {
         const c = state.centers[single];
         const [px, py] = handlePos(rects[single], handle);
-        dragRef.current = { mode: "scale", key: single, state0: state, rects0: rects, group, c, s0: [px - c[0], py - c[1]] };
+        dragRef.current = { mode: "scale", state0: state, rects0: rects, box: rects[single], group, c, s0: [px - c[0], py - c[1]] };
       } else {
         dragRef.current = { mode: "size", key: single, handle, state0: state, rects0: rects, group };
       }
@@ -268,6 +292,8 @@ export default function NetLayoutEditor({
       dragRef.current = { mode: "move", moving, ix, iy, state0: state };
       return;
     }
+    // a click outside the selected faces drops the selection (Shift keeps it and adds)
+    if (!e.shiftKey) setSelection(new Set());
     dragRef.current = { mode: "marquee", ix, iy, additive: e.shiftKey, base: new Set(selection) };
     setMarquee({ x0: ix, y0: iy, x1: ix, y1: iy });
   };
@@ -386,9 +412,9 @@ export default function NetLayoutEditor({
       if (snapping) {
         // manipulated edge = c + a·s; a free face's edge = cj + b·s (it scales in place);
         // an image edge is fixed. Solve each pairing for s, keep the nearest in reach.
-        const r0 = d.rects0[d.key];
-        const aX = [-r0.w / 2, r0.w / 2];
-        const aY = [-r0.h / 2, r0.h / 2];
+        // the scaled outline's edges, as offsets from the pivot
+        const aX = [d.box.x - c0x, d.box.x + d.box.w - c0x];
+        const aY = [d.box.y - c0y, d.box.y + d.box.h - c0y];
         let best = null;
         const consider = (axis, a, cm, target, b) => {
           const denom = a - b;
@@ -419,7 +445,7 @@ export default function NetLayoutEditor({
         }
       }
       setGuides(next);
-      setState(scaled(d.state0, d.key, s, d.group));
+      setState(scaled(d.state0, d.c, s, d.group));
     }
   };
   const onPointerUp = () => {
@@ -446,7 +472,7 @@ export default function NetLayoutEditor({
   const setDpi = (dpiValue) => {
     const target = dpiValue / 25.4;
     if (!(target > 0)) return;
-    setState((st) => scaled(st, anchorKey, target / st.pxPerMm, joinedTo(anchorKey, st)));
+    setState((st) => scaled(st, st.centers[anchorKey], target / st.pxPerMm, joinedTo(anchorKey, st)));
   };
   // box dimensions typed in: the selected face (or the first one) stays centred
   const setDims = (dims) => setState((st) => resized(st, dims, joinedTo(anchorKey, st), { key: anchorKey, fx: 0.5, fy: 0.5 }));
@@ -529,7 +555,7 @@ export default function NetLayoutEditor({
   const dimsChanged = dimFields.some((f) => state.dims[f.key] !== initialDims[f.key]);
 
   return (
-    <div className="fixed inset-0 flex items-center justify-center" style={{ background: "rgba(0,0,0,0.75)", zIndex: 50 }}>
+    <ModalBackdrop onDismiss={onCancel}>
       <div className="rounded-lg p-4 flex gap-4" style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", maxWidth: "calc(100vw - 32px)" }}>
         <div
           ref={stageRef}
@@ -615,11 +641,14 @@ export default function NetLayoutEditor({
                 strokeDasharray="3 3"
               />
             )}
-            {single &&
-              handlesOf(single).map((h) => {
-                const [hx, hy] = handlePos(rects[single], h);
+            {(() => {
+              const tgt = handleTarget();
+              if (!tgt) return null;
+              return tgt.handles.map((h) => {
+                const [hx, hy] = handlePos(tgt.rect, h);
                 const corner = h[0] && h[1];
-                return handleMode === "scale" ? (
+                // white squares scale (印刷の縮尺, or a multi-face selection); orange ones resize the box
+                return handleMode === "scale" || tgt.multi ? (
                   <rect key={h.join()} x={S(hx) - HANDLE_PX} y={T(hy) - HANDLE_PX} width={HANDLE_PX * 2} height={HANDLE_PX * 2} fill="#ffffff" stroke={strokeColor} strokeWidth={1.5} />
                 ) : (
                   // size handles are filled with the accent so the two modes never look alike
@@ -634,7 +663,8 @@ export default function NetLayoutEditor({
                     strokeWidth={1}
                   />
                 );
-              })}
+              });
+            })()}
             {marquee && (
               <rect
                 x={S(Math.min(marquee.x0, marquee.x1))}
@@ -674,7 +704,7 @@ export default function NetLayoutEditor({
             )}
           </div>
           <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-            面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択。選択した面をドラッグで移動します。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。
+            面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択、選択の外をクリックで解除。選択した面はドラッグで移動、複数選択中は四隅の白いハンドルで拡大縮小できます。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。
           </p>
 
           <div className="mb-2" style={sectionTitle}>
@@ -792,6 +822,6 @@ export default function NetLayoutEditor({
           </div>
         </div>
       </div>
-    </div>
+    </ModalBackdrop>
   );
 }
