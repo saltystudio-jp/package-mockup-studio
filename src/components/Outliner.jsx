@@ -36,15 +36,8 @@ function OutlinerRow({ row, index, selected, onSelect, onRemove, canRemove, drag
         ⋮⋮
       </span>
       <span style={{ width: "9px", height: "9px", flexShrink: 0, ...TYPE_DOT_STYLE[row.kind] }} />
-      <span className="flex-1" style={{ color: selected ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: selected ? 600 : 400 }}>
+      <span className="flex-1 truncate" style={{ color: selected ? "var(--text-primary)" : "var(--text-secondary)", fontWeight: selected ? 600 : 400 }}>
         {row.name}
-      </span>
-      <span
-        className="rounded px-1"
-        style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "10px", color: "var(--text-muted)", background: "var(--bg-surface-2)", border: "1px solid var(--border)" }}
-        title="レイヤー"
-      >
-        L{row.layer}
       </span>
       {/* delete stays mounted (so the row's width never shifts as the pointer moves
           across the list) but is invisible until the row is hovered or selected — a ×

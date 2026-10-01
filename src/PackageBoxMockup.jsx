@@ -210,6 +210,11 @@ export default function PackageBoxMockup() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const settingsMenuRef = useRef(null);
   useClickOutside(settingsMenuRef, settingsOpen, () => setSettingsOpen(false));
+  // viewport controls cheat-sheet: folded behind a ? button so it doesn't sit over the
+  // top of the view all the time
+  const [helpOpen, setHelpOpen] = useState(false);
+  const helpRef = useRef(null);
+  useClickOutside(helpRef, helpOpen, () => setHelpOpen(false));
 
   // the 3D render is a fixed-size "artboard" floating inside the viewport (pasteboard),
   // After Effects-preview-style: its own size, zoom, and pan position, independent of
@@ -1568,19 +1573,80 @@ export default function PackageBoxMockup() {
   };
 
   // ---- placing, duplicating, removing, replacing ----
-  // just right of everything already in the scene, so a clicked-in object never lands
-  // on (and stacks onto) something by accident — dropping onto the viewport is how you
-  // put it somewhere specific
-  const nextFreeSpot = (fields) => {
-    const box = three.current.fullBox;
-    if (!box || box.isEmpty() || boxInstances.length + componentInstances.length === 0) return { x: 0, z: 0 };
+  // A clicked-in object goes on an EMPTY patch of floor (so it never lands on, and
+  // stacks onto, something by accident — dropping onto the viewport is how you put it
+  // somewhere specific) that is INSIDE the current view. It used to go just right of
+  // everything, which the camera doesn't follow, so new objects often appeared outside
+  // the export frame. Candidates spiral out from the floor point at the centre of the
+  // view; the first one clear of every object whose whole footprint is on screen wins.
+  // Only when the view has no room left does it fall back to "right of everything",
+  // and then the camera is reset so the new object is still in frame.
+  const nextFreeSpot = (item, fields) => {
+    const t = three.current;
+    if (boxInstances.length + componentInstances.length === 0) return { x: 0, z: 0 };
+    const radius = Math.max(fields.w || 0, fields.d || 0) / 2; // any rotation fits inside
+    // how tall it will stand: a sleeve box stands on end (see boxBaseRotation), a card
+    // set upright stands on its long edge; anything else is its own height
+    const heightMm =
+      item.objKind === "box"
+        ? fields.boxType === "sleeve"
+          ? Math.max(fields.w, fields.d, fields.h)
+          : (fields.h || 0) * 1.1
+        : fields.orientation === "standing"
+          ? Math.max(fields.w || 0, fields.d || 0)
+          : fields.thickness || 0;
+    const MARGIN = 8;
+    const obstacles = [
+      ...boxInstances.map((b) => t.instances?.[b.id]?.boxGroup),
+      ...componentInstances.map((c) => t.componentInstancesTHREE?.[c.id]?.group),
+    ]
+      .filter(Boolean)
+      .map((g) => new THREE.Box3().setFromObject(g))
+      .filter((b) => !b.isEmpty())
+      .map((b) => ({ x0: b.min.x / SCALE, x1: b.max.x / SCALE, z0: b.min.z / SCALE, z1: b.max.z / SCALE }));
+    const clear = (x, z) => obstacles.every((o) => x + radius + MARGIN <= o.x0 || x - radius - MARGIN >= o.x1 || z + radius + MARGIN <= o.z0 || z - radius - MARGIN >= o.z1);
+
+    const cam = t.camera;
+    let center = null;
+    if (cam) {
+      cam.updateMatrixWorld();
+      const ray = new THREE.Raycaster();
+      ray.setFromCamera(new THREE.Vector2(0, 0), cam);
+      const hit = ray.ray.intersectPlane(new THREE.Plane(new THREE.Vector3(0, 1, 0), 0), new THREE.Vector3());
+      if (hit) center = { x: hit.x / SCALE, z: hit.z / SCALE };
+    }
+    const v = new THREE.Vector3();
+    const onScreen = (x, z) =>
+      [-1, 1].every((sx) =>
+        [-1, 1].every((sz) =>
+          [0, heightMm].every((y) => {
+            v.set((x + sx * radius) * SCALE, y * SCALE, (z + sz * radius) * SCALE).project(cam);
+            return Math.abs(v.x) <= 0.92 && Math.abs(v.y) <= 0.92 && v.z < 1;
+          })
+        )
+      );
+    if (center) {
+      const step = Math.max(10, radius);
+      for (let ring = 0; ring <= 12; ring++) {
+        const cands = [];
+        for (let i = -ring; i <= ring; i++)
+          for (let j = -ring; j <= ring; j++) if (Math.max(Math.abs(i), Math.abs(j)) === ring) cands.push({ x: center.x + i * step, z: center.z + j * step });
+        cands.sort((a, b) => Math.hypot(a.x - center.x, a.z - center.z) - Math.hypot(b.x - center.x, b.z - center.z));
+        const found = cands.find((c) => clear(c.x, c.z) && onScreen(c.x, c.z));
+        if (found) return { x: Math.round(found.x), z: Math.round(found.z) };
+      }
+    }
+    // no room in view: beside everything, then bring it into frame
+    setTimeout(() => three.current.resetCameraView?.(), 60);
+    const box = t.fullBox;
+    if (!box || box.isEmpty()) return { x: 0, z: 0 };
     return { x: Math.round(box.max.x / SCALE + 30 + fields.w / 2), z: Math.round((box.min.z + box.max.z) / 2 / SCALE) };
   };
 
   // new objects always go on top of the stack, so one dropped onto another rests on it
   const placeFromLibrary = (item, pos) => {
     const fields = objectFieldsFromTemplate(item);
-    const at = pos || nextFreeSpot(fields);
+    const at = pos || nextFreeSpot(item, fields);
     const obj = { ...PLACEMENT_DEFAULTS, ...fields, x: Math.round(at.x), z: Math.round(at.z), layer: topLayer() + 1 };
     if (item.objKind === "box") {
       const id = nextBoxIdRef.current++;
@@ -2344,7 +2410,6 @@ export default function PackageBoxMockup() {
             selectedName={selectedObject ? selectedObject.name || (selectedBox ? BOX_TYPE_LABEL[selectedBox.boxType || "lidded"] : "コンポーネント") : null}
             onPlace={(item) => placeFromLibrary(item)}
             onReplace={replaceSelected}
-            onRegister={registerSelected}
             onRename={renameUserComponent}
             onRemove={removeUserComponent}
             dragType={LIBRARY_DRAG_TYPE}
@@ -2540,11 +2605,49 @@ export default function PackageBoxMockup() {
             <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
           </div>
 
-          <div
-            className="absolute top-3 left-3 text-xs px-2 py-1 rounded"
-            style={{ background: "rgba(28,26,23,0.85)", color: "#9c968a", pointerEvents: "none" }}
-          >
-            オブジェクトをクリック:選択 / ドラッグ:移動 / 右クリックドラッグ:選択物を回転 / それ以外をドラッグ:視点回転 / ホイール:ズーム / 中クリックドラッグ:パン / Space+ドラッグ:プレビュー移動 / Ctrl+ホイール:プレビュー倍率
+          <div ref={helpRef} className="absolute top-3 left-3 flex flex-col items-start gap-1.5">
+            <button
+              onClick={() => setHelpOpen((v) => !v)}
+              aria-expanded={helpOpen}
+              aria-label="操作方法"
+              className="text-xs rounded"
+              style={{
+                width: "26px",
+                height: "26px",
+                background: "rgba(28,26,23,0.85)",
+                color: helpOpen ? "var(--text-primary)" : "var(--highlight)",
+                border: `1px solid ${helpOpen ? "var(--highlight)" : "var(--border-well)"}`,
+                fontWeight: 600,
+              }}
+              title="操作方法"
+            >
+              ?
+            </button>
+            {helpOpen && (
+              <div className="text-xs px-3 py-2 rounded" style={{ background: "rgba(28,26,23,0.92)", color: "#c9c3b6", border: "1px solid var(--border-well)" }}>
+                <div style={{ display: "grid", gridTemplateColumns: "auto auto", columnGap: "14px", rowGap: "3px" }}>
+                    {[
+                      ["クリック", "オブジェクトを選択"],
+                      ["ドラッグ(オブジェクト上)", "移動"],
+                      ["右クリックドラッグ", "選択中のオブジェクトを回転"],
+                      ["ドラッグ(何もない所)", "視点を回転"],
+                      ["ホイール", "ズーム"],
+                      ["中クリックドラッグ", "パン"],
+                      ["Space+ドラッグ", "プレビュー枠を移動"],
+                      ["Ctrl+ホイール", "プレビューの倍率"],
+                      ["Ctrl+] / Ctrl+[", "レイヤーを上へ / 下へ(Shiftで最前面・最背面)"],
+                      ["Ctrl+C / Ctrl+V", "選択中のオブジェクトをコピー / 貼り付け"],
+                      ["Delete", "選択中のオブジェクトを削除"],
+                      ["Ctrl+Z / Ctrl+Y", "元に戻す / やり直す"],
+                    ].map(([k, v]) => (
+                      <React.Fragment key={k}>
+                        <span style={{ color: "var(--text-primary)", whiteSpace: "nowrap" }}>{k}</span>
+                        <span>{v}</span>
+                      </React.Fragment>
+                    ))}
+                </div>
+              </div>
+            )}
           </div>
 
           <button

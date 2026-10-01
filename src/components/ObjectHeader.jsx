@@ -54,7 +54,7 @@ export default function ObjectHeader({ object, kindLabel, sizeText, libraryItems
           style={buttonStyle("quiet", { active: justRegistered })}
           title="この見た目(サイズ・絵柄)をコンポーネント一覧に登録"
         >
-          {justRegistered ? "登録済" : "登録"}
+          {justRegistered ? "登録しました" : "登録"}
         </button>
       </div>
     </div>

@@ -102,40 +102,18 @@ function LibraryTile({ item, canReplace, onPlace, onReplace, onRename, onRemove,
 // The コンポーネント tab: every template that can go into the scene — the three box
 // types, standard card sizes, tokens, and whatever has been registered from the scene.
 // Nothing here is edited in place (size, artwork etc. belong to the placed object and
-// are edited in the オブジェクト tab); the library only places, replaces and registers.
-export default function LibraryPanel({ items, selectedName, onPlace, onReplace, onRegister, onRename, onRemove, dragType }) {
-  const [justRegistered, setJustRegistered] = useState(false);
+// are edited in the オブジェクト tab); the library only places and replaces.
+export default function LibraryPanel({ items, selectedName, onPlace, onReplace, onRename, onRemove, dragType }) {
   const canReplace = selectedName != null;
   const groups = LIBRARY_GROUPS.map((g) => ({ ...g, items: items.filter((i) => i.group === g.key) }));
 
   return (
     <>
-      <Section
-        first
-        title="選択中のオブジェクト"
-        hint="サイズや絵柄を設定したオブジェクトを登録すると、下の「登録済み」から同じものを配置したり、別のオブジェクトをそれに置き換えたりできます。"
-      >
-        {canReplace ? (
-          <div className="flex items-center gap-2">
-            <span className="flex-1 truncate" style={{ fontSize: "12px", color: "var(--text-primary)" }}>
-              {selectedName}
-            </span>
-            <button
-              onClick={() => {
-                onRegister();
-                setJustRegistered(true);
-                setTimeout(() => setJustRegistered(false), 1500);
-              }}
-              style={buttonStyle("quiet", { active: justRegistered })}
-            >
-              {justRegistered ? "登録しました" : "コンポーネントとして登録"}
-            </button>
-          </div>
-        ) : (
-          <p style={helpText}>オブジェクトを選択すると、コンポーネントとして登録したり、下の一覧から置き換えたりできます。</p>
-        )}
-      </Section>
-
+      {/* registering lives on the object itself (the 登録 button next to 置き換え in the
+          オブジェクト tab) — the library only places and replaces */}
+      <p className="mb-3" style={helpText}>
+        クリックまたはドラッグで配置。オブジェクトを選択中は ⇄ でそれに置き換えます。自分で作った見た目は、オブジェクトタブの「登録」でここに追加できます。
+      </p>
       {groups.map((g) =>
         g.items.length === 0 && g.key === "user" ? null : (
           <Section key={g.key} title={g.label} meta={`${g.items.length}`}>
