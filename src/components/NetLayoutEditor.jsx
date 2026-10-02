@@ -16,6 +16,8 @@ const HANDLE_PX = 6; // half-size of a handle, screen px
 const SNAP_GUIDE = "#ff4fa3"; // literal: drawn over arbitrary artwork
 const MARQUEE = "#7fb2ff";
 const MIN_DIM = 5; // mm
+// corners and edge midpoints, as (hx, hy) ∈ {-1,0,1}²
+const ALL_HANDLES = [[-1, -1], [0, -1], [1, -1], [-1, 0], [1, 0], [-1, 1], [0, 1], [1, 1]];
 
 // Places each face of a box's net on the uploaded sheet as its own rectangle, and can
 // resize the box itself while doing it.
@@ -207,7 +209,7 @@ export default function NetLayoutEditor({
       [-1, 0, 1].forEach((hx) => {
         if (!hx && !hy) return;
         if (handleMode === "scale") {
-          if (hx && hy) out.push([hx, hy]);
+          out.push([hx, hy]);
           return;
         }
         if ((hx && !ax.w) || (hy && !ax.h)) return;
@@ -221,7 +223,7 @@ export default function NetLayoutEditor({
   // selection's outline, whose corners scale the selection (拡大縮小) in either mode
   const handleTarget = () => {
     if (selection.size > 1 && selBox) {
-      return { multi: true, rect: { x: selBox.x, y: selBox.y, w: selBox.x1 - selBox.x, h: selBox.y1 - selBox.y }, handles: [[-1, -1], [1, -1], [-1, 1], [1, 1]] };
+      return { multi: true, rect: { x: selBox.x, y: selBox.y, w: selBox.x1 - selBox.x, h: selBox.y1 - selBox.y }, handles: ALL_HANDLES };
     }
     if (single) return { multi: false, rect: rects[single], handles: handlesOf(single) };
     return null;
@@ -257,7 +259,9 @@ export default function NetLayoutEditor({
     if (handle) {
       const tgt = handleTarget();
       if (tgt.multi) {
-        // the selection scales about its opposite corner, like any design tool
+        // the selection scales about the opposite corner or edge, like any design tool.
+        // Faces share one print scale, so an edge handle still scales uniformly — it only
+        // decides which side stays put and which axis the drag is measured along
         const group = new Set(selection);
         setLinkedFaces(group);
         const c = handlePos(tgt.rect, [-handle[0], -handle[1]]);
@@ -704,7 +708,7 @@ export default function NetLayoutEditor({
             )}
           </div>
           <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-            面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択、選択の外をクリックで解除。選択した面はドラッグで移動、複数選択中は四隅の白いハンドルで拡大縮小できます。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。
+            面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択、選択の外をクリックで解除。選択した面はドラッグで移動、複数選択中は四隅と上下左右の白いハンドルで拡大縮小できます。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。
           </p>
 
           <div className="mb-2" style={sectionTitle}>
@@ -733,7 +737,7 @@ export default function NetLayoutEditor({
             <p className="text-xs mt-1.5" style={{ color: "var(--text-muted)" }}>
               {handleMode === "size"
                 ? "選択した面の辺・角をドラッグすると、箱の寸法が変わります(反対側の辺は固定)。"
-                : "選択した面の角をドラッグすると、全面の縮尺(画像に対する大きさ)が変わります。"}
+                : "選択した面の辺・角をドラッグすると、全面の縮尺(画像に対する大きさ)が変わります。"}
             </p>
           </div>
 
