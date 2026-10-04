@@ -290,6 +290,7 @@ export default function PackageBoxMockup() {
     return (kind === "box" ? boxInstances : componentInstances).some((o) => o.id === id);
   };
   const selectionKeys = activeKey ? (selectedKeys.includes(activeKey) ? selectedKeys.filter(objectExists) : [activeKey]) : [];
+  const lastFocusKeysRef = useRef(selectionKeys); // depth of field's target, kept after deselecting
   const selectionKeysRef = useRef(selectionKeys);
   selectionKeysRef.current = selectionKeys;
   // toggle: Shift/Ctrl-click — add the object to the selection, or take it out again
@@ -410,6 +411,14 @@ export default function PackageBoxMockup() {
     // material happened to recompile.
     renderer.toneMapping = THREE.LinearToneMapping;
     renderer.toneMappingExposure = 1;
+    // Sharpness of the preview:
+    //  - the canvas renders at the screen's real pixel density (capped at 2×); at 1× a
+    //    hi-DPI display upscaled the whole view, which the 2× export never showed
+    //  - printed faces get anisotropic filtering: without it a face seen at a steep
+    //    angle (the camera low over a card lying flat) fell back to a far smaller
+    //    mipmap and the artwork smeared
+    renderer.setPixelRatio(Math.min(2, window.devicePixelRatio || 1));
+    t.maxAnisotropy = renderer.capabilities.getMaxAnisotropy();
     renderer.shadowMap.enabled = true;
     renderer.shadowMap.type = THREE.PCFSoftShadowMap;
     renderer.domElement.style.width = "100%";
@@ -562,6 +571,7 @@ export default function PackageBoxMockup() {
     // shared by every box's surface finish (see finish.js)
     t.envMap = makeEnvMap(renderer);
     t.embossMap = makeEmbossNormalMap();
+    t.embossMap.anisotropy = t.maxAnisotropy || 1; // the weave stays crisp at grazing angles too
     t.allBoxesGroup = allBoxesGroup;
     t.instances = instances;
     t.ground = ground;
@@ -1113,10 +1123,14 @@ export default function PackageBoxMockup() {
         : activeSelection?.kind === "component"
           ? t.componentInstancesTHREE[activeSelection.id]?.group
           : null;
-    // where depth of field focuses in "selection" mode
+    // where depth of field focuses in "selection" mode: the last thing selected. It
+    // stays on it after a click on empty space deselects — dropping back to the scene's
+    // centre then made the focus jump every time the selection was cleared
     {
+      if (selectionKeys.length) lastFocusKeysRef.current = selectionKeys;
+      const focusKeys = selectionKeys.length ? selectionKeys : lastFocusKeysRef.current.filter(objectExists);
       const fb = new THREE.Box3();
-      selectionKeys.forEach((k) => {
+      focusKeys.forEach((k) => {
         const { kind, id } = parseKey(k);
         const grp = kind === "box" ? t.instances[id]?.boxGroup : t.componentInstancesTHREE[id]?.group;
         if (grp) fb.union(new THREE.Box3().setFromObject(grp));
@@ -1212,6 +1226,7 @@ export default function PackageBoxMockup() {
       const canvas = applyColorCorrection(buildComponentFaceCanvas(inst), colorCorrection);
       const tex = new THREE.CanvasTexture(canvas);
       tex.encoding = THREE.sRGBEncoding;
+      tex.anisotropy = t.maxAnisotropy || 1;
       // aspect of the canvas actually uploaded — the CROPPED image, not the original
       // file; using the original's aspect made every crop shift the art instead of
       // reframing it
@@ -1408,6 +1423,7 @@ export default function PackageBoxMockup() {
         const sliced = canvasByKey[key];
         if (sliced) {
           const tex = new THREE.CanvasTexture(applyColorCorrection(applyFaceTransform(sliced, transform), colorCorrection));
+          tex.anisotropy = t.maxAnisotropy || 1;
           tex.encoding = THREE.sRGBEncoding;
           tex.needsUpdate = true;
           mat.map = tex;
@@ -1533,6 +1549,9 @@ export default function PackageBoxMockup() {
         t.renderer.setClearColor(0x000000, 0);
       }
 
+      const prevPixelRatio = t.renderer.getPixelRatio();
+      t.renderer.setPixelRatio(1); // the export's size is cw/ch × its own scale, nothing else
+      t.dof?.composer.setPixelRatio(1);
       t.renderer.setSize(Math.round(cw * scaleFactor), Math.round(ch * scaleFactor), false);
       t.camera.aspect = cw / ch;
       t.camera.updateProjectionMatrix();
@@ -1555,6 +1574,8 @@ export default function PackageBoxMockup() {
       outCanvas.getContext("2d").drawImage(t.renderer.domElement, 0, 0);
       if (transparentExport && fitToContent) outCanvas = trimTransparentCanvas(outCanvas);
       const url = outCanvas.toDataURL("image/png");
+      t.renderer.setPixelRatio(prevPixelRatio);
+      t.dof?.composer.setPixelRatio(prevPixelRatio);
       t.renderer.setSize(cw, ch, false);
       t.dof?.setSize(cw, ch);
 
@@ -3128,8 +3149,8 @@ export default function PackageBoxMockup() {
           title="被写界深度"
           collapsible
           defaultOpen={false}
-          summary={dofEnabled ? `${dofFocusMode === "selection" ? "選択中" : `${dofDistance}mm`} / ${dofStrength}%` : "オフ"}
-          hint="ピントの合っていない所をぼかして、写真のような奥行きを出します。書き出しにも反映されます(透過PNGを除く)。"
+          summary={dofEnabled ? `${dofFocusMode === "selection" ? "最後に選択" : `${dofDistance}mm`} / ${dofStrength}%` : "オフ"}
+          hint="ピントの合っていない所をぼかして、写真のような奥行きを出します。「選択したものに合わせる」は最後に選択したオブジェクトにピントを合わせ、選択を解除してもそのままです。書き出しにも反映されます(透過PNGを除く)。"
         >
           <ToggleSwitch checked={dofEnabled} onChange={setDofEnabled} label="被写界深度を使う" />
           {dofEnabled && (
@@ -3139,7 +3160,7 @@ export default function PackageBoxMockup() {
                 onChange={setDofFocusMode}
                 size="sm"
                 options={[
-                  { value: "selection", label: "選択中に合わせる" },
+                  { value: "selection", label: "選択したものに合わせる" },
                   { value: "distance", label: "距離で指定" },
                 ]}
               />
