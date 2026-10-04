@@ -12,6 +12,7 @@ import Section from "./components/Section.jsx";
 import SegmentedControl from "./components/SegmentedControl.jsx";
 import DimensionFields from "./components/DimensionFields.jsx";
 import ModalBackdrop from "./components/ModalBackdrop.jsx";
+import PasteImageDialog from "./components/PasteImageDialog.jsx";
 import useClickOutside from "./hooks/useClickOutside.js";
 import { sectionTitle, sectionMeta, helpText, buttonStyle } from "./lib/ui.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, THEME_STORAGE_KEY } from "./lib/theme.js";
@@ -22,6 +23,9 @@ import {
   applyColorCorrection,
   trimTransparentCanvas,
   makePasteHandler,
+  imageFromClipboardItems,
+  clipboardItemsFromDataTransfer,
+  hasTransparency,
   coverFitRepeatOffset,
   detectAlphaCornerRadiusPx,
   detectAlphaShapeKind,
@@ -181,6 +185,8 @@ export default function PackageBoxMockup() {
   // component that's still placed in the scene) instead of window.confirm(), which
   // would look jarringly out of place against this app's own dark UI.
   const [confirmDialog, setConfirmDialog] = useState(null);
+  // an image pasted onto the app itself, waiting for "what is it?" — { img, sizeMm }
+  const [pastedImage, setPastedImage] = useState(null);
   const [lightAzimuth, setLightAzimuth] = useState(49);
   const [lightElevation, setLightElevation] = useState(46);
   const [groundVisible, setGroundVisible] = useState(true);
@@ -1851,6 +1857,56 @@ export default function PackageBoxMockup() {
     const cropped = cropToCanvas(c.img, c.transform);
     updateComponentInstance(c.id, { kind: "alpha", d: Math.round(((c.w * cropped.height) / cropped.width) * 10) / 10 });
   };
+  // ---- an image pasted onto the app: becomes a new box / card / token ----
+  // A box gets the picture as the chosen net and goes straight to the 面の配置 editor.
+  // Vector art from Illustrator knows its real size, so it's used: a card comes out at
+  // the art's actual mm, and a net is laid out at true print scale (the editor then
+  // resizes the box to the art). Bitmaps have no size, so they keep their proportions
+  // at a standard size instead.
+  const placePastedImage = ({ img, sizeMm }, choice) => {
+    const fileName = "(クリップボードから貼り付け)";
+    if (choice.kind === "box") {
+      const preset = PRESET_ITEMS.find((it) => it.objKind === "box" && it.template.boxType === choice.boxType);
+      const fields = objectFieldsFromTemplate(preset);
+      const slots = boxNetSlots(fields);
+      const slot = slots.find((x) => x.key === choice.slotKey) || slots[0];
+      let faceLayout = null;
+      if (sizeMm) {
+        const fit = defaultFaceLayout(slot, { img, transform: DEFAULT_CROP }, imgW(img), imgH(img));
+        const s = 1 / sizeMm[0] / fit.k; // true print scale over the fitted one, about the image centre
+        faceLayout = {
+          k: fit.k * s,
+          centers: Object.fromEntries(Object.entries(fit.centers).map(([k, [cx, cy]]) => [k, [0.5 + (cx - 0.5) * s, 0.5 + (cy - 0.5) * s]])),
+        };
+      }
+      const id = placeFromLibrary(preset);
+      setBoxNet(id, slot.key, { img, fileName, transform: DEFAULT_CROP, faceLayout });
+      setLayoutEditor({ boxId: id, slotKey: slot.key });
+      return;
+    }
+    const isCard = choice.kind === "card";
+    const preset =
+      PRESET_ITEMS.find((it) => it.id === (isCard ? "preset:card-poker" : "preset:token-chit25")) || PRESET_ITEMS.find((it) => it.objKind === "component");
+    const longEdge = isCard ? 88 : 25;
+    const aspect = imgW(img) / imgH(img);
+    const r1 = (v) => Math.round(v * 10) / 10;
+    const [w, d] = sizeMm ? sizeMm.map(r1) : aspect >= 1 ? [longEdge, r1(longEdge / aspect)] : [r1(longEdge * aspect), longEdge];
+    let shape = {};
+    if (choice.dieCut) shape = { kind: "alpha" };
+    else if (!isCard && hasTransparency(img)) {
+      // a token's printed outline usually IS its shape: circle or rounded square
+      const canvas = cropToCanvas(img, EMPTY_CROP);
+      const kind = detectAlphaShapeKind(canvas);
+      if (kind === "circle") shape = { kind: "circle" };
+      else if (kind) shape = { kind: "roundedSquare", cornerRadius: r1(detectAlphaCornerRadiusPx(canvas) * (w / canvas.width)) };
+    } else if (!isCard) shape = { kind: "roundedSquare", cornerRadius: 0.5 };
+    placeFromLibrary({
+      objKind: "component",
+      name: isCard ? "カード" : "駒",
+      template: { ...preset.template, w, d, img, fileName, transform: EMPTY_CROP, ...shape },
+    });
+  };
+
   // best-guess shape (circle vs. rounded-rect) + corner radius from the image's alpha
   // channel — see detectAlphaShapeKind/detectAlphaCornerRadiusPx in imaging.js
   const autoDetectComponentShape = () => {
@@ -1887,7 +1943,7 @@ export default function PackageBoxMockup() {
   // trim editor used to delete the object being trimmed, Ctrl+Z undid scene edits
   // underneath the dialog
   const modalOpenRef = useRef(false);
-  modalOpenRef.current = !!(cropEditor || layoutEditor || exportSettingsOpen || confirmDialog);
+  modalOpenRef.current = !!(cropEditor || layoutEditor || exportSettingsOpen || confirmDialog || pastedImage);
   // Esc closes the topmost dialog without applying (a field being typed into keeps Esc
   // for itself — ScrubField uses it to cancel the edit)
   useEffect(() => {
@@ -1898,13 +1954,68 @@ export default function PackageBoxMockup() {
       if (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA")) return;
       e.preventDefault();
       if (confirmDialog) setConfirmDialog(null);
+      else if (pastedImage) setPastedImage(null);
       else if (cropEditor) setCropEditor(null);
       else if (layoutEditor) setLayoutEditor(null);
       else setExportSettingsOpen(false);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [cropEditor, layoutEditor, exportSettingsOpen, confirmDialog]);
+  }, [cropEditor, layoutEditor, exportSettingsOpen, confirmDialog, pastedImage]);
+
+  // ---- copy / paste on the app itself (not into a field or a dialog) ----
+  // Copying an object also overwrites the system clipboard with a marker: otherwise an
+  // image copied earlier from Illustrator would still be there, and the next paste
+  // couldn't tell "duplicate my object" from "place this picture". Paste then decides by
+  // what's actually on the clipboard: the marker → duplicate the copied object; an
+  // image → ask what it is (PasteImageDialog); anything else → nothing.
+  const placePastedRef = useRef(null);
+  placePastedRef.current = placePastedImage;
+  useEffect(() => {
+    const MARKER = "[Package Mockup Studio object]";
+    const busy = () => {
+      const ae = document.activeElement;
+      return modalOpenRef.current || (ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.isContentEditable));
+    };
+    const onCopy = (e) => {
+      if (busy()) return;
+      if (window.getSelection && String(window.getSelection())) return; // copying page text
+      const sel = activeSelectionRef.current;
+      if (!sel) return;
+      clipboardRef.current = { kind: sel.kind, id: sel.id };
+      e.clipboardData.setData("text/plain", MARKER);
+      e.preventDefault();
+    };
+    const onPaste = async (e) => {
+      if (busy()) return;
+      const dt = e.clipboardData;
+      if (dt?.getData("text/plain") === MARKER) {
+        e.preventDefault();
+        const clip = clipboardRef.current;
+        if (clip) duplicateFnsRef.current?.(clip.kind, clip.id);
+        return;
+      }
+      const items = clipboardItemsFromDataTransfer(dt);
+      const types = items.flatMap((it) => it.types);
+      const plain = dt?.getData("text/plain") || "";
+      const html = dt?.getData("text/html") || "";
+      const looksLikeImage = types.some((t) => t.startsWith("image/")) || plain.includes("<svg") || /<svg|<img/.test(html);
+      if (!looksLikeImage) return;
+      e.preventDefault();
+      try {
+        const { img, sizeMm } = await imageFromClipboardItems(items);
+        setPastedImage({ img, sizeMm });
+      } catch (err) {
+        alert(err?.message || "クリップボードからの貼り付けに失敗しました");
+      }
+    };
+    window.addEventListener("copy", onCopy);
+    window.addEventListener("paste", onPaste);
+    return () => {
+      window.removeEventListener("copy", onCopy);
+      window.removeEventListener("paste", onPaste);
+    };
+  }, []);
 
   // ---- undo/redo history over the scene objects and the registered library — the
   // "what you actually did" layer, not every scene-wide setting. Snapshots are pushed
@@ -1987,16 +2098,8 @@ export default function PackageBoxMockup() {
           return;
         }
         const key = e.key.toLowerCase();
-        if (key === "c") {
-          const sel = activeSelectionRef.current;
-          if (sel) clipboardRef.current = { kind: sel.kind, id: sel.id };
-        } else if (key === "v") {
-          const clip = clipboardRef.current;
-          if (clip) {
-            e.preventDefault();
-            duplicateFnsRef.current?.(clip.kind, clip.id);
-          }
-        } else if (key === "z") {
+        // Ctrl+C / Ctrl+V are handled by the copy/paste listeners above
+        if (key === "z") {
           e.preventDefault();
           if (e.shiftKey) redoRef.current?.();
           else undoRef.current?.();
@@ -2692,7 +2795,7 @@ export default function PackageBoxMockup() {
                       ["Space+ドラッグ", "プレビュー枠を移動"],
                       ["Ctrl+ホイール", "プレビューの倍率"],
                       ["Ctrl+] / Ctrl+[", "レイヤーを上へ / 下へ(Shiftで最前面・最背面)"],
-                      ["Ctrl+C / Ctrl+V", "選択中のオブジェクトをコピー / 貼り付け"],
+                      ["Ctrl+C / Ctrl+V", "オブジェクトをコピー / 貼り付け(画像を貼ると箱・カード・駒として配置)"],
                       ["Delete", "選択中のオブジェクトを削除"],
                       ["Ctrl+Z / Ctrl+Y", "元に戻す / やり直す"],
                     ].map(([k, v]) => (
@@ -2764,6 +2867,19 @@ export default function PackageBoxMockup() {
       {/* end main row (outliner / viewport / inspector) */}
 
       {exportSettingsDialog}
+
+      {pastedImage && (
+        <PasteImageDialog
+          img={pastedImage.img}
+          sizeMm={pastedImage.sizeMm}
+          onCancel={() => setPastedImage(null)}
+          onChoose={(choice) => {
+            const p = pastedImage;
+            setPastedImage(null);
+            placePastedRef.current(p, choice);
+          }}
+        />
+      )}
 
       {confirmDialog && (
         <ModalBackdrop zIndex={60} onDismiss={() => setConfirmDialog(null)}>

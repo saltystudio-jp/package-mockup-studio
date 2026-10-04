@@ -222,7 +222,8 @@ export async function imageFromClipboardItems(items) {
       const img = await decodeClipboardBlob(blob, type);
       if (img) {
         console.info(`[paste] used ${type} → ${imgW(img)}×${imgH(img)}px`);
-        return { img, source: type };
+        // vector art knows its real size (Illustrator writes it in pt); bitmaps don't
+        return { img, source: type, sizeMm: img.sizeMm || null };
       }
       tried.push(`${type}: 画像データなし`);
     } catch (err) {
@@ -324,10 +325,41 @@ async function rasterizeSvg(markup) {
   const url = URL.createObjectURL(blob);
   try {
     const img = await loadImage(url);
-    return await canvasToImage(drawToCanvas(img, outW, outH));
+    const out = await canvasToImage(drawToCanvas(img, outW, outH));
+    out.sizeMm = [(w * 25.4) / 96, (h * 25.4) / 96]; // w/h are CSS px here (pt already ×4/3)
+    return out;
   } finally {
     URL.revokeObjectURL(url);
   }
+}
+
+// A paste EVENT's clipboard (DataTransfer) as ClipboardItem-like objects for
+// imageFromClipboardItems. Its contents can only be read during the event, so
+// everything is copied out synchronously here and handed back from getType later.
+export function clipboardItemsFromDataTransfer(dt) {
+  const items = [];
+  [...(dt?.files || [])].forEach((file) => items.push({ types: [file.type || "application/octet-stream"], getType: async () => file }));
+  const strings = {};
+  (dt?.types ? [...dt.types] : []).forEach((type) => {
+    if (type === "Files") return;
+    const text = dt.getData(type);
+    if (text) strings[type] = new Blob([text], { type });
+  });
+  if (Object.keys(strings).length) items.push({ types: Object.keys(strings), getType: async (type) => strings[type] });
+  return items;
+}
+
+// whether a picture has any see-through pixels — a die-cut needs them to find an outline
+export function hasTransparency(img) {
+  const k = Math.min(1, 256 / Math.max(imgW(img), imgH(img)));
+  const c = document.createElement("canvas");
+  c.width = Math.max(1, Math.round(imgW(img) * k));
+  c.height = Math.max(1, Math.round(imgH(img) * k));
+  const ctx = c.getContext("2d");
+  ctx.drawImage(img, 0, 0, c.width, c.height);
+  const data = ctx.getImageData(0, 0, c.width, c.height).data;
+  for (let i = 3; i < data.length; i += 4) if (data[i] < 200) return true;
+  return false;
 }
 
 export function blobToImage(blob) {
