@@ -283,7 +283,7 @@ export default function Outliner({
         })}
       </div>
       <p className="text-xs mt-2 flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-        上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。Shift/Ctrlクリックで複数選択。
+        上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。Shift/Ctrlクリック、または3DビューでShift+ドラッグで複数選択。
       </p>
     </div>
   );

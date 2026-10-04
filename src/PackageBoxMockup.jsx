@@ -293,6 +293,15 @@ export default function PackageBoxMockup() {
   const lastFocusKeysRef = useRef(selectionKeys); // depth of field's target, kept after deselecting
   const selectionKeysRef = useRef(selectionKeys);
   selectionKeysRef.current = selectionKeys;
+  // Shift+drag on empty space in the 3D view: a selection rectangle (client px)
+  const [viewMarquee, setViewMarquee] = useState(null);
+  const addToSelectionRef = useRef(null);
+  addToSelectionRef.current = (keys) => {
+    if (!keys.length) return;
+    const cur = selectionKeysRef.current;
+    setSelectedKeys([...cur, ...keys.filter((k) => !cur.includes(k))]);
+    setActiveSelection(parseKey(keys[keys.length - 1]));
+  };
   // toggle: Shift/Ctrl-click — add the object to the selection, or take it out again
   const selectObject = (kind, id, { toggle = false } = {}) => {
     if (kind == null) {
@@ -786,6 +795,10 @@ export default function PackageBoxMockup() {
               };
             }
           }
+        } else if (e.button === 0 && e.shiftKey) {
+          // Shift+drag on empty space: range-select instead of orbiting (a plain drag
+          // still orbits, so the two never compete)
+          t.marquee = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
         } else if (e.button === 0) {
           t.dragging = true;
           // a press on empty space: if it ends up a click rather than an orbit drag,
@@ -801,6 +814,13 @@ export default function PackageBoxMockup() {
       const dy = e.clientY - t.lastY;
       t.lastX = e.clientX;
       t.lastY = e.clientY;
+
+      if (t.marquee) {
+        t.marquee.x1 = e.clientX;
+        t.marquee.y1 = e.clientY;
+        setViewMarquee({ ...t.marquee });
+        return;
+      }
 
       if (t.panning) {
         const h = renderer.domElement.clientHeight || 1;
@@ -865,7 +885,52 @@ export default function PackageBoxMockup() {
       t.azimuth -= dx * 0.007;
       t.elevation = Math.min(1.5, Math.max(-1.5, t.elevation + dy * 0.006));
     };
+    // every object whose on-screen bounds touch the rectangle (client px)
+    const objectsInRect = (m) => {
+      const rx0 = Math.min(m.x0, m.x1);
+      const rx1 = Math.max(m.x0, m.x1);
+      const ry0 = Math.min(m.y0, m.y1);
+      const ry1 = Math.max(m.y0, m.y1);
+      const rect = renderer.domElement.getBoundingClientRect();
+      const v = new THREE.Vector3();
+      const hits = [];
+      ["box", "component"].forEach((kind) =>
+        instancesRefByKind[kind].current.forEach((o) => {
+          const grp = groupByKind[kind](o.id);
+          if (!grp) return;
+          const bb = new THREE.Box3().setFromObject(grp);
+          if (bb.isEmpty()) return;
+          let x0 = Infinity;
+          let x1 = -Infinity;
+          let y0 = Infinity;
+          let y1 = -Infinity;
+          [bb.min.x, bb.max.x].forEach((x) =>
+            [bb.min.y, bb.max.y].forEach((y) =>
+              [bb.min.z, bb.max.z].forEach((z) => {
+                v.set(x, y, z).project(camera);
+                const sx = rect.left + ((v.x + 1) / 2) * rect.width;
+                const sy = rect.top + ((1 - v.y) / 2) * rect.height;
+                x0 = Math.min(x0, sx);
+                x1 = Math.max(x1, sx);
+                y0 = Math.min(y0, sy);
+                y1 = Math.max(y1, sy);
+              })
+            )
+          );
+          if (x1 >= rx0 && x0 <= rx1 && y1 >= ry0 && y0 <= ry1) hits.push(`${kind}:${o.id}`);
+        })
+      );
+      return hits;
+    };
+
     const onPointerUp = (e) => {
+      if (t.marquee) {
+        const m = t.marquee;
+        t.marquee = null;
+        setViewMarquee(null);
+        // a Shift-click without dragging selects nothing (and deselects nothing)
+        if (Math.hypot(m.x1 - m.x0, m.y1 - m.y0) >= 4) addToSelectionRef.current?.(objectsInRect(m));
+      }
       // clicked on nothing (no drag): drop the selection, hiding its transform box
       if (t.emptyPress && Math.hypot(e.clientX - t.emptyPress.x, e.clientY - t.emptyPress.y) < 4) selectObject(null);
       t.emptyPress = null;
@@ -3329,6 +3394,8 @@ export default function PackageBoxMockup() {
                       ["ドラッグ(オブジェクト上)", "移動"],
                       ["右クリックドラッグ", "選択中のオブジェクトを回転"],
                       ["ドラッグ(何もない所)", "視点を回転"],
+                      ["Shift+ドラッグ(何もない所)", "範囲選択(選択に追加)"],
+                      ["Shift/Ctrl+クリック", "選択に追加 / 解除"],
                       ["ホイール", "ズーム"],
                       ["中クリックドラッグ", "パン"],
                       ["Space+ドラッグ", "プレビュー枠を移動"],
@@ -3406,6 +3473,22 @@ export default function PackageBoxMockup() {
       {/* end main row (outliner / viewport / inspector) */}
 
       {exportSettingsDialog}
+
+      {viewMarquee && (
+        <div
+          style={{
+            position: "fixed",
+            left: Math.min(viewMarquee.x0, viewMarquee.x1),
+            top: Math.min(viewMarquee.y0, viewMarquee.y1),
+            width: Math.abs(viewMarquee.x1 - viewMarquee.x0),
+            height: Math.abs(viewMarquee.y1 - viewMarquee.y0),
+            border: "1px solid var(--highlight)",
+            background: "rgba(95,211,217,0.12)",
+            pointerEvents: "none",
+            zIndex: 40,
+          }}
+        />
+      )}
 
       {toast && (
         <div
