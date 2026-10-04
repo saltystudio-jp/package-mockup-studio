@@ -35,20 +35,15 @@ export function resolveStacking(items) {
     // order they happen to appear in (previously, an earlier same-layer item could
     // already be in `resolved` by the time a later one in the same batch was checked,
     // silently letting same-layer objects stack on each other).
-    const floorYs = batch.map((item) => {
-      let floorY = 0;
-      if (item.groundSnap) {
-        resolved.forEach((r) => {
-          if (overlaps(item, r)) floorY = Math.max(floorY, r.topY);
-        });
-      }
-      return floorY;
-    });
+    const supportsOf = batch.map((item) => (item.groundSnap ? resolved.filter((r) => overlaps(item, r)) : []));
+    const floorYs = supportsOf.map((sup) => sup.reduce((y, r) => Math.max(y, r.topY), 0));
 
+    // `supports` lets the caller rest the item exactly on what's under it (settle.js)
+    // instead of on the top of their bounding boxes; floorY is that coarser answer
     batch.forEach((item, idx) => {
-      const { y, topY } = item.place(floorYs[idx]);
+      const { y, topY } = item.place(floorYs[idx], supportsOf[idx].map((r) => r.ref));
       results.set(item.id, y);
-      resolved.push({ minX: item.minX, maxX: item.maxX, minZ: item.minZ, maxZ: item.maxZ, topY });
+      resolved.push({ minX: item.minX, maxX: item.maxX, minZ: item.minZ, maxZ: item.maxZ, topY, ref: item.ref });
     });
   }
 

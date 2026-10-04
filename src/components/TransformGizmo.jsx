@@ -11,7 +11,7 @@ import ScrubField from "./ScrubField.jsx";
 //   - edge handles on the base     scale W or D (with the link: everything)
 //   - the handle on top            scales the height
 //   - the round handle             rotates (Shift: 15° steps)
-//   - the diamond above the top    leans the object (tiltX/tiltZ, ±45°, Shift: 5° steps):
+//   - the diamond above the top    leans the object (tiltX/tiltZ, ±90°, Shift: 5° steps):
 //                                  drag it the way the top should go
 //   - the toolbar's second row     angle, both tilts, and 立てる/寝かせる
 //   - a number field on each axis  types W / D / H directly
@@ -22,7 +22,7 @@ import ScrubField from "./ScrubField.jsx";
 const HANDLE = 5; // half size, screen px
 const ROT_STEP = 15;
 const LEAN_STEP = 5;
-const LEAN_MAX = 45; // the inspector's limit
+const LEAN_MAX = 90; // the inspector's limit: far enough to tip a die onto its next face
 const LEAN_STEM = 30; // screen px from the top of the box up to the lean handle
 
 const r1 = (v) => Math.round(v * 10) / 10;
@@ -65,7 +65,7 @@ function clampScale(k, entries) {
 // them and acts on the whole set: scaling is uniform (every object's sizes and its
 // distance from the anchor scale together), rotating turns every object and its
 // position around the set's centre. Changes come back as onPatchMany([{ kind, id, patch }]).
-export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH, zoom, link, onToggleLink, onPatch, onPatchMany }) {
+export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH, zoom, link, onToggleLink, onPatch, onPatchMany, onSettle, autoSettle }) {
   const [view, setView] = useState(null);
   const dragRef = useRef(null);
   const viewKeyRef = useRef("");
@@ -143,8 +143,10 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
       };
       // height: the vertical edge at the right-most base corner
       const hi = base.reduce((best, p, i) => (p[0] > base[best][0] ? i : best), 0);
-      // rotation handle: out past the edge that is highest on screen (the far side)
-      const far = [...edges].sort((p, q) => p.mid[1] - q.mid[1])[0];
+      // rotation handle: out from the object's FRONT (+z of its own frame — the side a
+      // card's art reads from and a standee faces), so it turns with the object and
+      // shows which way it faces
+      const far = edges[2];
       const reach = Math.max(g.x1 - g.x0, g.z1 - g.z0) * 0.22 + 0.12;
       const farMidYaw = [cx + far.out[0] * ((g.x1 - g.x0) / 2), cz + far.out[1] * ((g.z1 - g.z0) / 2)];
       const rotYaw = [farMidYaw[0] + far.out[0] * reach, farMidYaw[1] + far.out[1] * reach];
@@ -367,6 +369,8 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
     }
   };
   const end = () => {
+    // a die or standee let go of after tipping comes to rest on its own (置き直す)
+    if (dragRef.current?.mode === "lean" && autoSettle) onSettle?.();
     dragRef.current = null;
   };
   const dragProps = (mode, extra) => ({
@@ -466,8 +470,25 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
         <polygon points={pts(view.base)} fill="rgba(95,211,217,0.06)" stroke="var(--highlight)" strokeWidth={1.5 * inv} />
         <line x1={view.farMid[0]} y1={view.farMid[1]} x2={view.rot[0]} y2={view.rot[1]} stroke="var(--highlight)" strokeWidth={1 * inv} />
         <g style={{ cursor: "grab", pointerEvents: "auto" }} {...dragProps("rotate")}>
+          <title>ドラッグで回転(Shiftで15°刻み)。矢印は正面の向き</title>
           <circle cx={view.rot[0]} cy={view.rot[1]} r={HANDLE * 2.4 * inv} fill="transparent" />
-          <circle cx={view.rot[0]} cy={view.rot[1]} r={HANDLE * 1.3 * inv} fill="var(--highlight)" stroke="#ffffff" strokeWidth={1.5 * inv} />
+          <circle cx={view.rot[0]} cy={view.rot[1]} r={HANDLE * 1.6 * inv} fill="var(--highlight)" stroke="#ffffff" strokeWidth={1.5 * inv} />
+          {(() => {
+            // an arrowhead inside the handle, pointing the way the front faces
+            const dx = view.rot[0] - view.farMid[0];
+            const dy = view.rot[1] - view.farMid[1];
+            const l = Math.hypot(dx, dy) || 1;
+            const ux = dx / l;
+            const uy = dy / l;
+            const k = HANDLE * 1.05 * inv;
+            const [cx, cy] = view.rot;
+            return (
+              <path
+                d={`M${cx + ux * k} ${cy + uy * k} L${cx - ux * k * 0.6 - uy * k * 0.75} ${cy - uy * k * 0.6 + ux * k * 0.75} L${cx - ux * k * 0.6 + uy * k * 0.75} ${cy - uy * k * 0.6 - ux * k * 0.75} Z`}
+                fill="#1c1a17"
+              />
+            );
+          })()}
         </g>
         {!g.group &&
           (() => {
@@ -546,6 +567,15 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
             <GizmoScrub prefix="角度" value={obj.rotY || 0} onChange={(v) => onPatch({ rotY: ((v % 360) + 360) % 360 })} min={0} max={359} unit="°" title="角度(回転 Y)" />
             <GizmoScrub prefix="前後" value={obj.tiltX || 0} onChange={(v) => onPatch({ tiltX: v })} min={-LEAN_MAX} max={LEAN_MAX} unit="°" title="傾き(前後)" />
             <GizmoScrub prefix="左右" value={obj.tiltZ || 0} onChange={(v) => onPatch({ tiltZ: v })} min={-LEAN_MAX} max={LEAN_MAX} unit="°" title="傾き(左右)" />
+            <button
+              type="button"
+              onClick={() => onSettle?.()}
+              title="重力で自然に落ち着く向きに置き直す(傾けたダイスが面で止まる、倒れかけた駒が倒れる、など)"
+              className="rounded"
+              style={{ background: "rgba(28,26,23,0.9)", border: "1px solid var(--border-well)", color: "var(--text-primary)", fontSize: "11px", padding: "3px 8px", whiteSpace: "nowrap", cursor: "pointer" }}
+            >
+              置き直す
+            </button>
             {obj.kind !== "die" && (
               <button
                 type="button"

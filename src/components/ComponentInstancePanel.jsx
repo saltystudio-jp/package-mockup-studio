@@ -351,9 +351,21 @@ export default function ComponentInstancePanel({
           />
         )}
         <div className={`flex flex-col gap-2 ${c.kind !== "die" ? "mt-3" : ""}`}>
-          <ScrubField label="傾き(前後)" value={c.tiltX} onChange={(v) => onUpdate({ tiltX: v })} min={-45} max={45} unit="°" />
-          <ScrubField label="傾き(左右)" value={c.tiltZ} onChange={(v) => onUpdate({ tiltZ: v })} min={-45} max={45} unit="°" />
+          <ScrubField label="傾き(前後)" value={c.tiltX} onChange={(v) => onUpdate({ tiltX: v })} min={-90} max={90} unit="°" />
+          <ScrubField label="傾き(左右)" value={c.tiltZ} onChange={(v) => onUpdate({ tiltZ: v })} min={-90} max={90} unit="°" />
         </div>
+        <div className="mt-3">
+          <ToggleSwitch
+            checked={c.autoSettle ?? (c.kind === "die" || !!c.standee)}
+            onChange={(v) => onUpdate({ autoSettle: v })}
+            label="傾けて離したら自然に倒れる・転がる"
+          />
+        </div>
+        {c.poseQuat && (
+          <button onClick={() => onUpdate({ poseQuat: null })} className="mt-2" style={buttonStyle("quiet")} title="置き直しで変わった向きを元に戻す">
+            置き直した向きをリセット
+          </button>
+        )}
       </Section>
 
       <Section title="スタッキング" collapsible defaultOpen={false} summary={c.groundSnap !== false ? "接地する" : "固定"}>

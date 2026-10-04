@@ -38,6 +38,7 @@ import {
 import { buildComponentFaceCanvas } from "./lib/components.js";
 import { composePlacementQuaternion, groundSnapY, measureXZFootprint } from "./lib/placement.js";
 import { resolveStacking } from "./lib/stacking.js";
+import { settleQuaternion, restLift } from "./lib/settle.js";
 import { srgb, setSrgb } from "./lib/color.js";
 import { BOX_FINISHES, makeEnvMap, makeEmbossNormalMap, applyFinish } from "./lib/finish.js";
 import {
@@ -1110,6 +1111,12 @@ export default function PackageBoxMockup() {
     t.syncComponentInstances?.(componentInstances);
 
     const stackItems = [];
+    // on the floor at `y`, then raised just enough to rest exactly on what's under it
+    const restOnSupports = (group, y, supports) => {
+      group.position.y = y;
+      const lift = restLift(group, supports);
+      return lift > 0 ? y + lift : y;
+    };
 
     boxInstances.forEach((data) => {
       const inst = t.instances[data.id];
@@ -1122,6 +1129,8 @@ export default function PackageBoxMockup() {
       const base = boxBaseRotation(data);
       inst.boxGroup.quaternion.copy(composePlacementQuaternion(base ? { ...data, orientation: "lying" } : data));
       if (base) inst.boxGroup.quaternion.multiply(base);
+      // a pose found by 置き直す (settle.js), beyond what yaw/tilt can say
+      if (data.poseQuat) inst.boxGroup.quaternion.multiply(new THREE.Quaternion().fromArray(data.poseQuat));
       inst.boxGroup.position.set(data.x * SCALE, 0, data.z * SCALE);
       inst.boxGroup.updateMatrixWorld(true);
 
@@ -1133,11 +1142,13 @@ export default function PackageBoxMockup() {
         ...footprint,
         // rests on its body/shell (model.measureObj), not the whole group — an opened
         // lid or pulled-out tray shouldn't change how low the box itself sits
-        place: (floorY) => {
-          const y =
+        ref: inst.boxGroup,
+        place: (floorY, supports) => {
+          let y =
             data.groundSnap === false
               ? data.floatHeight * SCALE
-              : groundSnapY(inst.boxGroup, data.floatHeight || 0, SCALE, { floorY, measureObj: inst.model.measureObj });
+              : groundSnapY(inst.boxGroup, data.floatHeight || 0, SCALE, { floorY: supports?.length ? 0 : floorY, measureObj: inst.model.measureObj });
+          if (data.groundSnap !== false && supports?.length) y = restOnSupports(inst.boxGroup, y, supports);
           inst.boxGroup.position.y = y;
           inst.boxGroup.updateMatrixWorld(true);
           return { y, topY: new THREE.Box3().setFromObject(inst.boxGroup).max.y };
@@ -1149,6 +1160,7 @@ export default function PackageBoxMockup() {
       const rec = t.componentInstancesTHREE[data.id];
       if (!rec) return;
       rec.group.quaternion.copy(composePlacementQuaternion(data));
+      if (data.poseQuat) rec.group.quaternion.multiply(new THREE.Quaternion().fromArray(data.poseQuat));
       rec.group.position.set(data.x * SCALE, 0, data.z * SCALE);
       rec.group.updateMatrixWorld(true);
 
@@ -1158,8 +1170,10 @@ export default function PackageBoxMockup() {
         layer: data.layer ?? 0,
         groundSnap: data.groundSnap !== false,
         ...footprint,
-        place: (floorY) => {
-          const y = data.groundSnap === false ? data.floatHeight * SCALE : groundSnapY(rec.group, data.floatHeight || 0, SCALE, { floorY });
+        ref: rec.group,
+        place: (floorY, supports) => {
+          let y = data.groundSnap === false ? data.floatHeight * SCALE : groundSnapY(rec.group, data.floatHeight || 0, SCALE, { floorY: supports?.length ? 0 : floorY });
+          if (data.groundSnap !== false && supports?.length) y = restOnSupports(rec.group, y, supports);
           rec.group.position.y = y;
           rec.group.updateMatrixWorld(true);
           return { y, topY: new THREE.Box3().setFromObject(rec.group).max.y };
@@ -1556,10 +1570,32 @@ export default function PackageBoxMockup() {
   }, [boxInstances]);
 
   // ---- object editing ----
+  // standing up / laying down starts the pose afresh: a pose found by 置き直す was
+  // relative to the old one
+  const withPoseReset = (patch) => (patch && "orientation" in patch && !("poseQuat" in patch) ? { ...patch, poseQuat: null } : patch);
   const updateBox = (id, patch) =>
-    setBoxInstances((prev) => prev.map((b) => (b.id === id ? { ...b, ...(typeof patch === "function" ? patch(b) : patch) } : b)));
+    setBoxInstances((prev) => prev.map((b) => (b.id === id ? { ...b, ...withPoseReset(typeof patch === "function" ? patch(b) : patch) } : b)));
   const updateComponentInstance = (id, patch) =>
-    setComponentInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...(typeof patch === "function" ? patch(c) : patch) } : c)));
+    setComponentInstances((prev) => prev.map((c) => (c.id === id ? { ...c, ...withPoseReset(typeof patch === "function" ? patch(c) : patch) } : c)));
+
+  // ---- 置き直す: let the object come to rest on its own (see settle.js) ----
+  // The settled rotation is stored as the object's `poseQuat`, on top of its yaw and
+  // standing/lying pose, with the tilt folded into it (tilt back to 0).
+  const settleObject = (kind, id) => {
+    const t = three.current;
+    const data = (kind === "box" ? boxInstances : componentInstances).find((o) => o.id === id);
+    const grp = kind === "box" ? t.instances[id]?.boxGroup : t.componentInstancesTHREE[id]?.group;
+    if (!data || !grp) return;
+    const qFinal = settleQuaternion(grp);
+    const base = kind === "box" ? boxBaseRotation(data) : null;
+    const flat = { ...data, tiltX: 0, tiltZ: 0 };
+    const q0 = composePlacementQuaternion(base ? { ...flat, orientation: "lying" } : flat);
+    if (base) q0.multiply(base);
+    const pose = q0.invert().multiply(qFinal).normalize();
+    const patch = { tiltX: 0, tiltZ: 0, poseQuat: pose.toArray().map((v) => Math.round(v * 1e6) / 1e6) };
+    if (kind === "box") updateBox(id, patch);
+    else updateComponentInstance(id, patch);
+  };
 
   // Reads a picked file as an image. Resets the input afterwards: a file input only
   // fires onChange when its value CHANGES, so without this, picking the same file
@@ -3121,8 +3157,8 @@ export default function PackageBoxMockup() {
             ]}
           />
           <div className="flex flex-col gap-2 mt-3">
-            {instanceNumField("傾き(前後)", "tiltX", -45, 45, "°")}
-            {instanceNumField("傾き(左右)", "tiltZ", -45, 45, "°")}
+            {instanceNumField("傾き(前後)", "tiltX", -90, 90, "°")}
+            {instanceNumField("傾き(左右)", "tiltZ", -90, 90, "°")}
           </div>
           {(displayValue("tiltX") !== 0 || displayValue("tiltZ") !== 0) && (
             <button onClick={() => updateBox(selectedBox.id, { tiltX: 0, tiltZ: 0 })} className="w-full mt-2" style={buttonStyle("quiet")}>
@@ -3414,6 +3450,12 @@ export default function PackageBoxMockup() {
                 zoom={artboardZoom}
                 link={gizmoLink}
                 onToggleLink={() => setGizmoLink((v) => !v)}
+                autoSettle={selectedObject.autoSettle ?? (selectedObject.kind === "die" || !!selectedObject.standee)}
+                onSettle={() => {
+                  // after the pose just written has reached the 3D scene
+                  const sel = activeSelection;
+                  setTimeout(() => settleObject(sel.kind, sel.id), 30);
+                }}
                 onPatch={(patch) =>
                   activeSelection.kind === "box" ? updateBox(activeSelection.id, patch) : updateComponentInstance(activeSelection.id, patch)
                 }
