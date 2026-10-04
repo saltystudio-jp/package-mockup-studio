@@ -700,6 +700,9 @@ export default function PackageBoxMockup() {
           }
         } else if (e.button === 0) {
           t.dragging = true;
+          // a press on empty space: if it ends up a click rather than an orbit drag,
+          // it deselects (see onPointerUp)
+          t.emptyPress = { x: e.clientX, y: e.clientY };
         }
       }
       t.lastX = e.clientX;
@@ -755,7 +758,10 @@ export default function PackageBoxMockup() {
       t.azimuth -= dx * 0.007;
       t.elevation = Math.min(1.5, Math.max(-1.5, t.elevation + dy * 0.006));
     };
-    const onPointerUp = () => {
+    const onPointerUp = (e) => {
+      // clicked on nothing (no drag): drop the selection, hiding its transform box
+      if (t.emptyPress && Math.hypot(e.clientX - t.emptyPress.x, e.clientY - t.emptyPress.y) < 4) selectObject(null);
+      t.emptyPress = null;
       t.canvasPointerActive = false;
       t.dragging = false;
       t.panning = false;
@@ -1577,6 +1583,8 @@ export default function PackageBoxMockup() {
   // artboard itself — middle-click-drag ON the box keeps panning the 3D camera exactly
   // as before (that handler lives on the canvas and is untouched).
   const onViewportPointerDown = (e) => {
+    // a plain click on the grey area around the artboard deselects too
+    if (e.button === 0 && e.target === e.currentTarget && !spacePressedRef.current) selectObject(null);
     const isMiddleOutsideArtboard = e.button === 1 && !artboardRef.current?.contains(e.target);
     if (!spacePressedRef.current && !isMiddleOutsideArtboard) return;
     if (isMiddleOutsideArtboard) e.preventDefault();
