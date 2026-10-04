@@ -537,6 +537,7 @@ export default function PackageBoxMockup() {
         c.kind === "alpha" ? `${imageKey(c.img)}:${JSON.stringify(c.transform)}` : "",
         c.kind === "die" ? c.dieStyle : "",
         c.standee ? `standee:${c.stand}:${c.standSize}` : "",
+        c.edgeRadius > 0 ? `edge:${c.edgeRadius}:${c.edgeRound}` : "",
       ].join("|");
     const syncComponentInstances = (items) => {
       const idSet = new Set(items.map((p) => p.id));

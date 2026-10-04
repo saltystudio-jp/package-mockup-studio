@@ -175,6 +175,39 @@ export default function ComponentInstancePanel({
             />
           )}
         </div>
+        {/* the board's edge, rounded where it meets a face — a punched cardboard chip */}
+        <div className="flex flex-col gap-2 mt-2">
+          <ScrubField
+            label="フチの丸み"
+            value={c.edgeRadius || 0}
+            onChange={(v) => onUpdate({ edgeRadius: Math.max(0, v) })}
+            min={0}
+            max={Math.max(0.1, (c.edgeRound || "both") === "both" ? c.thickness / 2 : c.thickness)}
+            unit="mm"
+            step={0.05}
+            decimals={2}
+          />
+          {(c.edgeRadius || 0) > 0 && (
+            <SegmentedControl
+              size="sm"
+              value={c.edgeRound || "both"}
+              onChange={(v) => onUpdate({ edgeRound: v })}
+              options={
+                standee
+                  ? [
+                      { value: "both", label: "両面" },
+                      { value: "top", label: "表だけ" },
+                      { value: "bottom", label: "裏だけ" },
+                    ]
+                  : [
+                      { value: "both", label: "両面" },
+                      { value: "top", label: "上側だけ" },
+                      { value: "bottom", label: "下側だけ" },
+                    ]
+              }
+            />
+          )}
+        </div>
         <div className="mt-3">
           <ToggleSwitch checked={standee} onChange={setStandee} label="立てて使う(スタンド駒)" />
         </div>

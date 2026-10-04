@@ -15,6 +15,7 @@
 // which is the same board), 3 = a plastic base.
 import * as THREE from "three";
 import { BufferGeometryUtils } from "three/examples/jsm/utils/BufferGeometryUtils.js";
+import { extrudeRounded, shapesToPolys } from "./roundedExtrude.js";
 
 export const STAND_STYLES = [
   { key: "slot", label: "差し込み" },
@@ -81,19 +82,26 @@ export function roundTopShape(w, h, r) {
   return s;
 }
 
-// `shapes`: THREE.Shape(s) of the outline; `frame`: the box the art spans in the
-// shapes' own coordinates (for the UVs); `post`: { sx, sy, dy } to bring those
-// coordinates to W×H with the bottom at y = 0 (omit when they already are)
-export function buildStandeeGeometry({ shapes, frame, post, t, stand, standSize, w, h }) {
+// `shapes`: THREE.Shape(s) of the outline; `post`: { sx, sy, dy } bringing them to
+// W×H with the bottom at y = 0; `frame`: the box the art spans, centred (before dy);
+// `edgeRadius`/`edgeRound`: rounded board edges, front ("top"), back ("bottom") or both
+export function buildStandeeGeometry({ shapes, frame, post = { sx: 1, sy: 1, dy: 0 }, t, stand, standSize, w, h, edgeRadius = 0, edgeRound = "both" }) {
   const parts = [];
-  const piece = new THREE.ExtrudeGeometry(shapes, { depth: t, bevelEnabled: false, curveSegments: 32 });
-  piece.translate(0, 0, -t / 2);
-  const pieceG = groupByNormal(piece);
-  capUVs(pieceG, frame);
-  if (post) {
-    pieceG.scale(post.sx, post.sy, 1);
-    pieceG.translate(0, post.dy, 0);
+  const polys = shapesToPolys(shapes, post);
+  const artFrame = { minX: frame.minX, maxX: frame.maxX, minY: frame.minY + post.dy, maxY: frame.maxY + post.dy };
+  let pieceG;
+  if (edgeRadius > 0) {
+    pieceG = extrudeRounded(polys, { depth: t, radius: edgeRadius, sides: edgeRound, frame: artFrame });
+  } else {
+    const flatShapes = polys.map(({ outer, holes }) => {
+      const sh = new THREE.Shape(outer);
+      sh.holes = holes.map((hl) => new THREE.Path(hl));
+      return sh;
+    });
+    pieceG = groupByNormal(new THREE.ExtrudeGeometry(flatShapes, { depth: t, bevelEnabled: false }));
   }
+  pieceG.translate(0, 0, -t / 2);
+  capUVs(pieceG, artFrame);
   let lift = 0;
 
   if (stand === "slot") {

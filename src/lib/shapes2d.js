@@ -15,6 +15,7 @@ import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import { traceAlphaOutline } from "./alphaOutline.js";
 import { buildDieGeometry } from "./dice.js";
 import { buildStandeeGeometry, roundTopShape } from "./standee.js";
+import { extrudeRounded, shapesToPolys } from "./roundedExtrude.js";
 
 // each preset is defined once in a normalized unit square (-0.5..0.5 on both axes) and
 // scaled to the piece's actual W/D at build time — so one definition works at any size.
@@ -234,6 +235,7 @@ export function buildComponentGeometry(component, scale) {
   }
   if (component.kind === "die") return buildDieGeometry(component, scale);
   if (component.standee) return buildStandee(component, scale, w, d, thickness);
+  if ((component.edgeRadius || 0) > 0) return buildRoundedPiece(component, scale, w, d, thickness);
   if (component.kind === "roundTop") {
     // lying flat, "top" is the far edge — the image's top, as on a card
     const shape = roundTopShape(w, d, (component.cornerRadius || 0) * scale);
@@ -267,16 +269,14 @@ export function buildComponentGeometry(component, scale) {
   return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
 }
 
-// a standee: W = width, D = height, thickness = the board (see standee.js)
-function buildStandee(c, scale, w, h, t) {
-  const common = { t, w, h, stand: c.stand || "slot", standSize: (c.standSize || 0) * scale };
+// A piece's outline for the sweep-based builders (rounded edges, standees): the
+// THREE.Shape(s), a `post` scale/offset that brings them to W×H centred on the origin,
+// and the frame its art spans once there.
+function outlineFor(c, scale, w, h) {
   const r = (c.cornerRadius || 0) * scale;
-  if (c.kind === "roundTop") {
-    return buildStandeeGeometry({ ...common, shapes: roundTopShape(w, h, r), frame: { minX: -w / 2, maxX: w / 2, minY: 0, maxY: h } });
-  }
-  if (c.kind === "roundedSquare") {
-    return buildStandeeGeometry({ ...common, shapes: roundedRectShape(w, h, r), frame: { minX: -w / 2, maxX: w / 2, minY: -h / 2, maxY: h / 2 }, post: { sx: 1, sy: 1, dy: h / 2 } });
-  }
+  const centred = { minX: -w / 2, maxX: w / 2, minY: -h / 2, maxY: h / 2 };
+  if (c.kind === "roundTop") return { shapes: roundTopShape(w, h, r), post: { sx: 1, sy: 1, dy: -h / 2 }, frame: centred };
+  if (c.kind === "roundedSquare") return { shapes: roundedRectShape(w, h, r), post: { sx: 1, sy: 1, dy: 0 }, frame: centred };
   // unit-frame outlines (-0.5..0.5): a die-cut, an SVG, or a preset shape
   let shapes = null;
   if (c.kind === "alpha") {
@@ -295,5 +295,31 @@ function buildStandee(c, scale, w, h, t) {
     shapes = buildPresetShape(c.kind);
   }
   if (!shapes) shapes = roundedRectShape(1, 1, 0);
-  return buildStandeeGeometry({ ...common, shapes, frame: { minX: -0.5, maxX: 0.5, minY: -0.5, maxY: 0.5 }, post: { sx: w, sy: h, dy: h / 2 } });
+  return { shapes, post: { sx: w, sy: h, dy: 0 }, frame: centred };
+}
+
+// a flat piece with rounded edges (see roundedExtrude.js), laid flat like the rest
+function buildRoundedPiece(c, scale, w, d, t) {
+  const { shapes, post, frame } = outlineFor(c, scale, w, d);
+  const geo = extrudeRounded(shapesToPolys(shapes, post), { depth: t, radius: (c.edgeRadius || 0) * scale, sides: c.edgeRound || "both", frame });
+  geo.rotateX(-Math.PI / 2); // same as buildExtrudedPieceGeometry: thickness up, art's top to the back
+  return geo;
+}
+
+// a standee: W = width, D = height, thickness = the board (see standee.js)
+function buildStandee(c, scale, w, h, t) {
+  const { shapes, post, frame } = outlineFor(c, scale, w, h);
+  return buildStandeeGeometry({
+    t,
+    w,
+    h,
+    stand: c.stand || "slot",
+    standSize: (c.standSize || 0) * scale,
+    edgeRadius: (c.edgeRadius || 0) * scale,
+    edgeRound: c.edgeRound || "both",
+    shapes,
+    // standees stand on y = 0
+    post: { ...post, dy: post.dy + h / 2 },
+    frame,
+  });
 }
