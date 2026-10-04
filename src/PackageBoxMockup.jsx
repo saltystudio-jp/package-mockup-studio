@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import * as THREE from "three";
 import { createDof } from "./lib/dof.js";
+import { PROJECT_EXT, serializeProject, deserializeProject, storeGet, storeSet, writeProjectFile, readProjectFile } from "./lib/project.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
 import ScrubField from "./components/ScrubField.jsx";
 import Outliner from "./components/Outliner.jsx";
@@ -225,6 +226,13 @@ export default function PackageBoxMockup() {
     }
   }, [theme]);
   const [settingsOpen, setSettingsOpen] = useState(false);
+  // ---- project file (保存 / 開く) ----
+  const [fileMenuOpen, setFileMenuOpen] = useState(false);
+  const fileMenuRef = useRef(null);
+  useClickOutside(fileMenuRef, fileMenuOpen, () => setFileMenuOpen(false));
+  const [projectName, setProjectName] = useState(null); // the file's name, once saved/opened
+  const [toast, setToast] = useState(null);
+  const [, forceRender] = useState(0);
   const settingsMenuRef = useRef(null);
   useClickOutside(settingsMenuRef, settingsOpen, () => setSettingsOpen(false));
   // viewport controls cheat-sheet: folded behind a ? button so it doesn't sit over the
@@ -923,7 +931,9 @@ export default function PackageBoxMockup() {
       artboardFittedRef.current = true;
       initialFitRo.disconnect();
       // frame the starting scene once the artboard has its final shape
-      setTimeout(() => t.resetCameraView?.(), 50);
+      setTimeout(() => {
+        if (!t.cameraRestored) t.resetCameraView?.();
+      }, 50);
     }, 400);
 
     let raf;
@@ -2283,6 +2293,199 @@ export default function PackageBoxMockup() {
     applyHistorySnapshot(h.stack[newIndex]);
     historyRef.current = { ...h, index: newIndex };
   };
+  // ---- the project: everything a save holds ----
+  const projectSettings = {
+    guideColor,
+    colorCorrection,
+    bgMode,
+    bgImage,
+    fov,
+    lightAzimuth,
+    lightElevation,
+    groundVisible,
+    exposure,
+    ambientBoost,
+    dofEnabled,
+    dofFocusMode,
+    dofDistance,
+    dofStrength,
+    artboardW,
+    artboardH,
+    exportScale,
+    transparentExport,
+    fitToContent,
+  };
+  const settingSetters = {
+    guideColor: setGuideColor,
+    colorCorrection: setColorCorrection,
+    bgMode: setBgMode,
+    bgImage: setBgImage,
+    fov: setFov,
+    lightAzimuth: setLightAzimuth,
+    lightElevation: setLightElevation,
+    groundVisible: setGroundVisible,
+    exposure: setExposure,
+    ambientBoost: setAmbientBoost,
+    dofEnabled: setDofEnabled,
+    dofFocusMode: setDofFocusMode,
+    dofDistance: setDofDistance,
+    dofStrength: setDofStrength,
+    artboardW: setArtboardW,
+    artboardH: setArtboardH,
+    exportScale: setExportScale,
+    transparentExport: setTransparentExport,
+    fitToContent: setFitToContent,
+  };
+  // what a 新規 project starts from: the values this session started with
+  const initialProjectRef = useRef(null);
+  if (!initialProjectRef.current) initialProjectRef.current = { boxInstances, componentInstances: [], userComponents: [], settings: projectSettings, camera: null };
+  const collectProject = () => {
+    const t = three.current;
+    return {
+      boxInstances,
+      componentInstances,
+      userComponents,
+      settings: projectSettings,
+      camera: t.center ? { azimuth: t.azimuth, elevation: t.elevation, radius: t.radius, center: t.center.toArray(), pan: t.pan.toArray() } : null,
+    };
+  };
+  // the values a save holds, as of the last save/open — anything different is unsaved
+  const trackedValues = [boxInstances, componentInstances, userComponents, ...Object.values(projectSettings)];
+  const savedValuesRef = useRef(null);
+  const markCleanRef = useRef(true);
+  useEffect(() => {
+    if (markCleanRef.current) {
+      savedValuesRef.current = trackedValues;
+      markCleanRef.current = false;
+    }
+  });
+  const dirty = !!savedValuesRef.current && trackedValues.some((v, i) => v !== savedValuesRef.current[i]);
+
+  const applyProject = (d) => {
+    const boxes = d.boxInstances || [];
+    const comps = d.componentInstances || [];
+    const users = d.userComponents || [];
+    if (historyTimerRef.current) clearTimeout(historyTimerRef.current);
+    isApplyingHistoryRef.current = true;
+    historyRef.current = { stack: [{ boxInstances: boxes, componentInstances: comps, userComponents: users }], index: 0 }; // a loaded project starts its own undo history
+    setBoxInstances(boxes);
+    setComponentInstances(comps);
+    setUserComponents(users);
+    Object.entries(d.settings || {}).forEach(([k, v]) => settingSetters[k]?.(v));
+    nextBoxIdRef.current = Math.max(0, ...boxes.map((b) => b.id)) + 1;
+    nextComponentInstanceIdRef.current = Math.max(0, ...comps.map((c) => c.id)) + 1;
+    nextUserComponentIdRef.current = Math.max(0, ...users.map((u) => Number(String(u.id).split(":")[1]) || 0)) + 1;
+    const top = stackOrder(boxes, comps).pop();
+    selectObject(top?.kind ?? null, top?.id);
+    const t = three.current;
+    if (d.camera && t.center) {
+      t.azimuth = d.camera.azimuth;
+      t.elevation = d.camera.elevation;
+      t.radius = d.camera.radius;
+      t.center.fromArray(d.camera.center);
+      t.pan.fromArray(d.camera.pan);
+      t.cameraRestored = true;
+    } else {
+      t.cameraRestored = false;
+      setTimeout(() => three.current.resetCameraView?.(), 120);
+    }
+    markCleanRef.current = true;
+  };
+
+  const fileHandleRef = useRef(null);
+  const showToast = (text) => {
+    setToast(text);
+    setTimeout(() => setToast((cur) => (cur === text ? null : cur)), 3500);
+  };
+  const saveProject = async (saveAs = false) => {
+    setFileMenuOpen(false);
+    try {
+      const text = serializeProject(collectProject());
+      const handle = await writeProjectFile(text, {
+        handle: saveAs ? null : fileHandleRef.current,
+        suggestedName: `${projectName || "mockup"}${PROJECT_EXT}`,
+      });
+      if (handle) fileHandleRef.current = handle;
+      setProjectName((handle?.name || `${projectName || "mockup"}${PROJECT_EXT}`).replace(PROJECT_EXT, ""));
+      savedValuesRef.current = trackedValues; // exactly what was just written
+      forceRender((n) => n + 1); // so the unsaved mark clears
+      showToast("保存しました");
+    } catch (err) {
+      if (err?.name !== "AbortError") alert(`保存できませんでした: ${err?.message || err}`);
+    }
+  };
+  const openProject = async () => {
+    setFileMenuOpen(false);
+    try {
+      const { text, name, handle } = await readProjectFile();
+      const { data } = await deserializeProject(text);
+      applyProject(data);
+      fileHandleRef.current = handle;
+      setProjectName(name.replace(PROJECT_EXT, "").replace(/\.json$/, ""));
+      showToast(`「${name}」を開きました`);
+    } catch (err) {
+      if (err?.name !== "AbortError") alert(err?.message || "開けませんでした");
+    }
+  };
+  const newProject = () => {
+    setFileMenuOpen(false);
+    setConfirmDialog({
+      title: "新規作成",
+      message: dirty ? "今の作業を閉じて、新しいプロジェクトを始めます。保存していない変更は失われます。" : "今の作業を閉じて、新しいプロジェクトを始めます。",
+      confirmLabel: "新規作成",
+      onConfirm: () => {
+        applyProject(initialProjectRef.current);
+        fileHandleRef.current = null;
+        setProjectName(null);
+      },
+    });
+  };
+  const fileActionsRef = useRef(null);
+  fileActionsRef.current = { saveProject, openProject };
+
+  // ---- automatic save in the browser, restored on the next visit ----
+  const autosaveReadyRef = useRef(false);
+  useEffect(() => {
+    let cancelled = false;
+    storeGet("autosave")
+      .then(async (text) => {
+        if (!text || cancelled) return;
+        const { data } = await deserializeProject(text);
+        if (cancelled) return;
+        applyProject(data);
+        if (data.projectName) setProjectName(data.projectName);
+        showToast("前回の作業を復元しました");
+      })
+      .catch((err) => console.warn("[autosave] restore failed", err))
+      .finally(() => {
+        autosaveReadyRef.current = true;
+      });
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+  const autosaveRef = useRef(null);
+  autosaveRef.current = () => {
+    if (!autosaveReadyRef.current) return;
+    try {
+      storeSet("autosave", serializeProject({ ...collectProject(), projectName })).catch((err) => console.warn("[autosave]", err));
+    } catch (err) {
+      console.warn("[autosave]", err);
+    }
+  };
+  useEffect(() => {
+    const id = setTimeout(() => autosaveRef.current?.(), 1200);
+    return () => clearTimeout(id);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [...trackedValues, projectName]);
+  useEffect(() => {
+    // the camera isn't React state: save it too when the tab is hidden or closed
+    const flush = () => document.visibilityState === "hidden" && autosaveRef.current?.();
+    document.addEventListener("visibilitychange", flush);
+    return () => document.removeEventListener("visibilitychange", flush);
+  }, []);
+
   const undoRef = useRef(null);
   undoRef.current = undo;
   const redoRef = useRef(null);
@@ -2307,7 +2510,13 @@ export default function PackageBoxMockup() {
         }
         const key = e.key.toLowerCase();
         // Ctrl+C / Ctrl+V are handled by the copy/paste listeners above
-        if (key === "a") {
+        if (key === "s") {
+          e.preventDefault();
+          fileActionsRef.current?.saveProject(e.shiftKey);
+        } else if (key === "o") {
+          e.preventDefault();
+          fileActionsRef.current?.openProject();
+        } else if (key === "a") {
           e.preventDefault();
           selectAllRef.current?.();
         } else if (key === "z") {
@@ -2453,7 +2662,42 @@ export default function PackageBoxMockup() {
         >
           Package Mockup Studio<span style={{ color: "var(--accent)" }}>.</span>
         </h1>
+        <span className="truncate" style={{ fontSize: "12px", color: "var(--text-secondary)", minWidth: 0 }} title={dirty ? "保存していない変更があります" : undefined}>
+          {projectName ? `${projectName}${PROJECT_EXT}` : "未保存のプロジェクト"}
+          {dirty && <span style={{ color: "var(--accent)", marginLeft: "6px" }}>● 未保存</span>}
+        </span>
         <div className="flex-1" />
+        <div ref={fileMenuRef} className="relative flex-shrink-0">
+          <button onClick={() => setFileMenuOpen((v) => !v)} style={{ ...buttonStyle("quiet", { active: fileMenuOpen }), fontSize: "12px", padding: "6px 10px" }}>
+            ファイル ▾
+          </button>
+          {fileMenuOpen && (
+            <div
+              className="absolute right-0 top-full mt-1 rounded-lg p-1.5 z-20 flex flex-col"
+              style={{ background: "var(--bg-surface-2)", border: "1px solid var(--border)", width: "220px" }}
+            >
+              {[
+                ["新規作成", "", newProject],
+                ["開く…", "Ctrl+O", openProject],
+                ["保存", "Ctrl+S", () => saveProject(false)],
+                ["名前を付けて保存…", "Ctrl+Shift+S", () => saveProject(true)],
+              ].map(([label, keys, fn]) => (
+                <button
+                  key={label}
+                  onClick={fn}
+                  className="flex items-center justify-between text-xs text-left rounded px-2 py-2"
+                  style={{ color: "var(--text-primary)", background: "transparent" }}
+                >
+                  <span>{label}</span>
+                  <span style={{ fontFamily: "'JetBrains Mono', monospace", fontSize: "10px", color: "var(--text-muted)" }}>{keys}</span>
+                </button>
+              ))}
+              <p className="px-2 pt-1.5 pb-1" style={{ fontSize: "10px", lineHeight: 1.5, color: "var(--text-muted)", borderTop: "1px solid var(--border)", marginTop: "4px" }}>
+                作業はこのブラウザにも自動で保存され、次に開いたときに復元されます。
+              </p>
+            </div>
+          )}
+        </div>
         <div ref={settingsMenuRef} className="relative flex-shrink-0">
           <button
             onClick={() => setSettingsOpen((v) => !v)}
@@ -3141,6 +3385,16 @@ export default function PackageBoxMockup() {
       {/* end main row (outliner / viewport / inspector) */}
 
       {exportSettingsDialog}
+
+      {toast && (
+        <div
+          role="status"
+          className="fixed rounded px-3 py-2"
+          style={{ left: "50%", bottom: "24px", transform: "translateX(-50%)", zIndex: 70, background: "var(--bg-surface-2)", border: "1px solid var(--border)", color: "var(--text-primary)", fontSize: "12px", boxShadow: "0 6px 24px rgba(0,0,0,0.4)" }}
+        >
+          {toast}
+        </div>
+      )}
 
       {pastedImage && (
         <PasteImageDialog
