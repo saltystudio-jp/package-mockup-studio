@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect, useCallback } from "react";
 import * as THREE from "three";
+import { createDof } from "./lib/dof.js";
 import CropEditorModal from "./components/CropEditorModal.jsx";
 import ScrubField from "./components/ScrubField.jsx";
 import Outliner from "./components/Outliner.jsx";
@@ -194,6 +195,11 @@ export default function PackageBoxMockup() {
   const [lightElevation, setLightElevation] = useState(46);
   const [groundVisible, setGroundVisible] = useState(true);
   const [exposure, setExposure] = useState(1);
+  // 被写界深度 (depth of field): off by default; focus follows the selection or a set distance
+  const [dofEnabled, setDofEnabled] = useState(false);
+  const [dofFocusMode, setDofFocusMode] = useState("selection"); // "selection" | "distance"
+  const [dofDistance, setDofDistance] = useState(600); // mm from the camera
+  const [dofStrength, setDofStrength] = useState(40); // 0..100
   const [ambientBoost, setAmbientBoost] = useState(1);
   const [sidebarWidth, setSidebarWidth] = useState(320);
   // inspector rail tab: オブジェクト(選択中の箱/コンポーネントの個別設定+箱の展開図画像) /
@@ -889,6 +895,7 @@ export default function PackageBoxMockup() {
       camera.aspect = w / h;
       camera.updateProjectionMatrix();
       renderer.setSize(w, h, false);
+      t.dof?.setSize(w, h);
       fitBackgroundTexture(t, container);
     };
     t.setArtboardRenderSize = setArtboardRenderSize;
@@ -938,7 +945,12 @@ export default function PackageBoxMockup() {
         instances[data.id]?.model?.animate(data);
       });
 
-      renderer.render(scene, camera);
+      const ds = t.dofSettings;
+      if (ds?.enabled && t.dof) {
+        t.dof.render({ focusPoint: ds.mode === "selection" ? t.focusPoint : null, focusDistance: ds.distanceMm * SCALE, strength: ds.strength });
+      } else {
+        renderer.render(scene, camera);
+      }
       t.onFrame?.(); // the transform box's overlay follows the camera
     };
     animate();
@@ -1091,6 +1103,17 @@ export default function PackageBoxMockup() {
         : activeSelection?.kind === "component"
           ? t.componentInstancesTHREE[activeSelection.id]?.group
           : null;
+    // where depth of field focuses in "selection" mode
+    {
+      const fb = new THREE.Box3();
+      selectionKeys.forEach((k) => {
+        const { kind, id } = parseKey(k);
+        const grp = kind === "box" ? t.instances[id]?.boxGroup : t.componentInstancesTHREE[id]?.group;
+        if (grp) fb.union(new THREE.Box3().setFromObject(grp));
+      });
+      const src = !fb.isEmpty() ? fb : t.fullBox && !t.fullBox.isEmpty() ? t.fullBox : null;
+      t.focusPoint = src ? src.getCenter(new THREE.Vector3()) : null;
+    }
     if (selectionKeys.length > 1) {
       // several objects: one world-aligned box around all of them
       const bb = new THREE.Box3();
@@ -1276,6 +1299,18 @@ export default function PackageBoxMockup() {
     }
     if (t.ambient) t.ambient.intensity = baseAmbient * ambientBoost;
   }, [bgMode, bgImage, ambientBoost]);
+
+  // ---- depth of field: the post-process is built the first time it's switched on ----
+  useEffect(() => {
+    const t = three.current;
+    if (!t.renderer) return;
+    t.dofSettings = { enabled: dofEnabled, mode: dofFocusMode, distanceMm: dofDistance, strength: dofStrength };
+    if (dofEnabled && !t.dof) {
+      t.dof = createDof(t.renderer, t.scene, t.camera);
+      const size = t.renderer.getSize(new THREE.Vector2());
+      t.dof.setSize(size.x, size.y);
+    }
+  }, [dofEnabled, dofFocusMode, dofDistance, dofStrength]);
 
   // ---- exposure: a uniform, so it applies on the next frame without recompiling ----
   useEffect(() => {
@@ -1491,7 +1526,16 @@ export default function PackageBoxMockup() {
       t.renderer.setSize(Math.round(cw * scaleFactor), Math.round(ch * scaleFactor), false);
       t.camera.aspect = cw / ch;
       t.camera.updateProjectionMatrix();
-      t.renderer.render(t.scene, t.camera);
+      // depth of field goes into the export too — except a transparent one, where the
+      // blur would smear the subject's edges into the see-through background
+      const ds = t.dofSettings;
+      const withDof = ds?.enabled && t.dof && !transparentExport;
+      if (withDof) {
+        t.dof.setSize(Math.round(cw * scaleFactor), Math.round(ch * scaleFactor));
+        t.dof.render({ focusPoint: ds.mode === "selection" ? t.focusPoint : null, focusDistance: ds.distanceMm * SCALE, strength: ds.strength });
+      } else {
+        t.renderer.render(t.scene, t.camera);
+      }
 
       // draw into a plain 2D canvas first — needed either way to read pixels back out
       // for the transparent-export trim, and just as valid a toDataURL source otherwise
@@ -1502,6 +1546,7 @@ export default function PackageBoxMockup() {
       if (transparentExport && fitToContent) outCanvas = trimTransparentCanvas(outCanvas);
       const url = outCanvas.toDataURL("image/png");
       t.renderer.setSize(cw, ch, false);
+      t.dof?.setSize(cw, ch);
 
       if (transparentExport) {
         t.scene.background = prevBackground;
@@ -2833,6 +2878,33 @@ export default function PackageBoxMockup() {
             <ScrubField label="露出" value={exposure} onChange={setExposure} min={0.4} max={2} step={0.05} decimals={2} />
             <ScrubField label="環境光の強さ" value={ambientBoost} onChange={setAmbientBoost} min={0} max={2} step={0.05} decimals={2} />
           </div>
+        </Section>
+
+        <Section
+          title="被写界深度"
+          collapsible
+          defaultOpen={false}
+          summary={dofEnabled ? `${dofFocusMode === "selection" ? "選択中" : `${dofDistance}mm`} / ${dofStrength}%` : "オフ"}
+          hint="ピントの合っていない所をぼかして、写真のような奥行きを出します。書き出しにも反映されます(透過PNGを除く)。"
+        >
+          <ToggleSwitch checked={dofEnabled} onChange={setDofEnabled} label="被写界深度を使う" />
+          {dofEnabled && (
+            <div className="flex flex-col gap-2 mt-3">
+              <SegmentedControl
+                value={dofFocusMode}
+                onChange={setDofFocusMode}
+                size="sm"
+                options={[
+                  { value: "selection", label: "選択中に合わせる" },
+                  { value: "distance", label: "距離で指定" },
+                ]}
+              />
+              {dofFocusMode === "distance" && (
+                <ScrubField label="ピント距離" value={dofDistance} onChange={setDofDistance} min={50} max={5000} unit="mm" dragRange={600} />
+              )}
+              <ScrubField label="ボケの強さ" value={dofStrength} onChange={setDofStrength} min={0} max={100} unit="%" />
+            </div>
+          )}
         </Section>
 
         {/* changes the IMAGE itself (every printed face: boxes, cards, tokens); the light is set above */}
