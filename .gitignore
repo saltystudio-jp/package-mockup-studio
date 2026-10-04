@@ -25,3 +25,6 @@ desktop.ini
 
 # Claude Code per-machine settings (launch.json is shared on purpose)
 .claude/settings.local.json
+
+# single-file build for opening from disk (npm run build:standalone)
+standalone/
