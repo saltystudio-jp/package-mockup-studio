@@ -7,6 +7,7 @@ import SegmentedControl from "./SegmentedControl.jsx";
 import { buttonStyle, helpText, sectionMeta } from "../lib/ui.js";
 import { COMPONENT_SHAPE_KINDS } from "../lib/components.js";
 import { DIE_STYLES } from "../lib/dice.js";
+import { STAND_STYLES } from "../lib/standee.js";
 
 // Inspector for the selected card/token/piece. Everything about it is edited here —
 // shape and size included — since the object owns its own appearance; the library
@@ -23,7 +24,18 @@ export default function ComponentInstancePanel({
   onAutoDetectShape,
   onSetSvgShape,
   onDieCut,
+  onUploadBackImage,
+  onPasteBackImage,
 }) {
+  const standee = !!c.standee;
+  // turning any flat piece into a standee (or back): it stands up, on a slot foot by
+  // default, and gets a board's thickness if it was as thin as a card
+  const setStandee = (on) =>
+    onUpdate(
+      on
+        ? { standee: true, orientation: "standing", stand: c.stand || "slot", thickness: c.thickness < 1 ? 2 : c.thickness }
+        : { standee: false, orientation: "lying" }
+    );
   const t = c.transform || {};
   const cropped = !!(t.cropTop || t.cropBottom || t.cropLeft || t.cropRight);
   return (
@@ -147,10 +159,10 @@ export default function ComponentInstancePanel({
           </p>
         )}
         <div className="flex flex-col gap-2">
-          <ScrubField label="幅 W" value={c.w} onChange={(v) => onUpdate({ w: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
-          <ScrubField label="奥行 D" value={c.d} onChange={(v) => onUpdate({ d: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
+          <ScrubField label={standee ? "幅" : "幅 W"} value={c.w} onChange={(v) => onUpdate({ w: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
+          <ScrubField label={standee ? "高さ" : "奥行 D"} value={c.d} onChange={(v) => onUpdate({ d: Math.max(1, v) })} min={1} max={500} unit="mm" step={0.5} decimals={1} />
           <ScrubField label="厚み" value={c.thickness} onChange={(v) => onUpdate({ thickness: Math.max(0.1, v) })} min={0.1} max={300} unit="mm" step={0.1} decimals={1} />
-          {c.kind === "roundedSquare" && (
+          {(c.kind === "roundedSquare" || c.kind === "roundTop") && (
             <ScrubField
               label="角の丸み"
               value={c.cornerRadius}
@@ -162,6 +174,9 @@ export default function ComponentInstancePanel({
               decimals={1}
             />
           )}
+        </div>
+        <div className="mt-3">
+          <ToggleSwitch checked={standee} onChange={setStandee} label="立てて使う(スタンド駒)" />
         </div>
       </Section>
 
@@ -213,6 +228,65 @@ export default function ComponentInstancePanel({
           </div>
         </div>
       </Section>
+
+      {standee && (
+        <>
+          <Section title="スタンド" meta="mm" hint="差し込み: 同じ厚紙の半円を十字に差し込んだ足。台座: プラスチックの台座に差したもの。">
+            <SegmentedControl value={c.stand || "slot"} onChange={(v) => onUpdate({ stand: v })} options={STAND_STYLES.map((st) => ({ value: st.key, label: st.label }))} />
+            {(c.stand || "slot") !== "none" && (
+              <div className="flex flex-col gap-2 mt-2.5">
+                <ScrubField
+                  label={(c.stand || "slot") === "slot" ? "足の半径(0で自動)" : "台座の長さ(0で自動)"}
+                  value={c.standSize || 0}
+                  onChange={(v) => onUpdate({ standSize: Math.max(0, v) })}
+                  min={0}
+                  max={150}
+                  unit="mm"
+                  step={0.5}
+                  decimals={1}
+                />
+                {c.stand === "base" && (
+                  <label className="flex items-center justify-between text-sm" style={{ color: "var(--text-secondary)" }}>
+                    台座の色
+                    <input
+                      type="color"
+                      value={c.standColor || "#2b2b2b"}
+                      onChange={(e) => onUpdate({ standColor: e.target.value })}
+                      style={{ width: "26px", height: "22px", padding: 0, border: "1px solid var(--border)", background: "none", cursor: "pointer" }}
+                    />
+                  </label>
+                )}
+              </div>
+            )}
+          </Section>
+
+          <Section title="裏面" hint="裏面の絵柄です。設定しないときは表と同じ絵柄が裏にも印刷されます(型抜きの輪郭にも合います)。">
+            <div className="flex gap-2.5">
+              <div className="rounded overflow-hidden flex-shrink-0" style={{ width: "64px", height: "64px", background: "var(--bg-well)", padding: "6px" }}>
+                <ShapePreview component={{ ...c, img: c.backImg || c.img, transform: c.backImg ? null : c.transform }} />
+              </div>
+              <div className="flex flex-col gap-1.5 flex-1 min-w-0">
+                <div className="flex gap-1.5">
+                  <label className="ui-btn flex-1 block text-center cursor-pointer" style={buttonStyle("quiet")}>
+                    アップロード
+                    <input type="file" accept="image/*" onChange={onUploadBackImage} className="hidden" />
+                  </label>
+                  <button onClick={onPasteBackImage} className="flex-1" style={buttonStyle("quiet")}>
+                    貼り付け
+                  </button>
+                </div>
+                {c.backImg ? (
+                  <button onClick={() => onUpdate({ backImg: null })} style={buttonStyle("quiet")}>
+                    表と同じにする
+                  </button>
+                ) : (
+                  <p style={helpText}>今は表と同じ絵柄です。</p>
+                )}
+              </div>
+            </div>
+          </Section>
+        </>
+      )}
 
         </>
       )}

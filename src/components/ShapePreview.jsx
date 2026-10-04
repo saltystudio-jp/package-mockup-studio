@@ -13,6 +13,8 @@ export function shapeClipPath(kind) {
       return "polygon(25% 6.7%, 75% 6.7%, 100% 50%, 75% 93.3%, 25% 93.3%, 0% 50%)";
     case "triangle":
       return "polygon(50% 2%, 98% 98%, 2% 98%)";
+    case "roundTop":
+      return "inset(0 round 34% 34% 0 0)";
     case "roundedSquare":
     default:
       return "inset(0 round 18%)";

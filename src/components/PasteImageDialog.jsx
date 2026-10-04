@@ -8,7 +8,7 @@ import { imgW, imgH, hasTransparency } from "../lib/imaging.js";
 // with the picture as its net; a card or token asks whether to die-cut it to the
 // picture's outline first.
 //
-// onChoose({ kind: "box", boxType, slotKey } | { kind: "card"|"token", dieCut })
+// onChoose({ kind: "box", boxType, slotKey } | { kind: "card"|"token"|"standee", dieCut })
 const BOX_CHOICES = [
   { boxType: "lidded", slotKey: "lid", label: "身蓋箱・蓋", sub: "蓋の展開図" },
   { boxType: "lidded", slotKey: "body", label: "身蓋箱・身", sub: "身の展開図" },
@@ -80,10 +80,11 @@ export default function PasteImageDialog({ img, sizeMm, onChoose, onCancel }) {
             <div className="mb-2" style={sectionTitle}>
               何として配置しますか?
             </div>
-            <div className="grid grid-cols-3 gap-1.5">
+            <div className="grid grid-cols-2 gap-1.5">
               <Choice label="箱" sub="展開図として" onClick={() => setStep("box")} />
               <Choice label="カード" sub="表面の絵柄" onClick={() => setStep("card")} />
               <Choice label="駒" sub="チット・タイル" onClick={() => setStep("token")} />
+              <Choice label="スタンド駒" sub="立てて使う厚紙の駒" onClick={() => setStep("standee")} />
             </div>
           </>
         )}
@@ -105,7 +106,7 @@ export default function PasteImageDialog({ img, sizeMm, onChoose, onCancel }) {
           </>
         )}
 
-        {(step === "card" || step === "token") && (
+        {(step === "card" || step === "token" || step === "standee") && (
           <>
             <div className="mb-2" style={sectionTitle}>
               型抜き(ダイカット)にしますか?
@@ -120,7 +121,7 @@ export default function PasteImageDialog({ img, sizeMm, onChoose, onCancel }) {
               />
               <Choice
                 label="型抜きしない"
-                sub={step === "card" ? "角丸の長方形" : "形は画像から推定"}
+                sub={step === "card" ? "角丸の長方形" : step === "standee" ? "上だけ角丸" : "形は画像から推定"}
                 onClick={() => onChoose({ kind: step, dieCut: false })}
               />
             </div>

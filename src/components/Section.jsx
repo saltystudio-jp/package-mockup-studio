@@ -1,4 +1,21 @@
 import React, { useState } from "react";
+
+const STORE_KEY = "pms.sectionsOpen";
+const remembered = (() => {
+  try {
+    return JSON.parse(localStorage.getItem(STORE_KEY) || "{}") || {};
+  } catch {
+    return {};
+  }
+})();
+function remember(title, open) {
+  remembered[title] = open;
+  try {
+    localStorage.setItem(STORE_KEY, JSON.stringify(remembered));
+  } catch {
+    // storage unavailable: still remembered for this session
+  }
+}
 import { sectionTitle, sectionMeta, helpText } from "../lib/ui.js";
 
 // One group of settings in the inspector. Replaces the bordered card that every group
@@ -6,9 +23,10 @@ import { sectionTitle, sectionMeta, helpText } from "../lib/ui.js";
 // the panel's own padding bled through so the rule spans the full sidebar width and
 // reads as a divider between parts of one instrument, not as a gap between cards.
 //
-// `collapsible` sections remember nothing across mounts on purpose — `defaultOpen`
-// expresses what matters most for the object you just selected, and a section you
-// folded for one box shouldn't stay folded when you click a different one.
+// `collapsible` sections remember whether they're open, by title: switching tabs or
+// selecting another object (which unmounts and remounts them) used to fold everything
+// back to its default every time. `defaultOpen` only applies until that section is
+// first opened or closed; the choice also survives a reload (per browser).
 //
 // A folded section shows `summary` in its heading row, so collapsing is never
 // information loss: "高さ 30 / クリア 2" tells you what's inside without unfolding it.
@@ -29,7 +47,14 @@ export default function Section({
   first = false,
   children,
 }) {
-  const [open, setOpen] = useState(defaultOpen);
+  const key = typeof title === "string" ? title : null;
+  const [open, setOpenState] = useState(() => (key && key in remembered ? remembered[key] : defaultOpen));
+  const setOpen = (fn) =>
+    setOpenState((v) => {
+      const next = typeof fn === "function" ? fn(v) : fn;
+      if (key) remember(key, next);
+      return next;
+    });
   const [hintOpen, setHintOpen] = useState(false);
   const expanded = !collapsible || open;
 

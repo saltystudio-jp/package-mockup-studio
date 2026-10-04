@@ -14,6 +14,7 @@ import * as THREE from "three";
 import { SVGLoader } from "three/examples/jsm/loaders/SVGLoader.js";
 import { traceAlphaOutline } from "./alphaOutline.js";
 import { buildDieGeometry } from "./dice.js";
+import { buildStandeeGeometry, roundTopShape } from "./standee.js";
 
 // each preset is defined once in a normalized unit square (-0.5..0.5 on both axes) and
 // scaled to the piece's actual W/D at build time — so one definition works at any size.
@@ -232,6 +233,14 @@ export function buildComponentGeometry(component, scale) {
     return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
   }
   if (component.kind === "die") return buildDieGeometry(component, scale);
+  if (component.standee) return buildStandee(component, scale, w, d, thickness);
+  if (component.kind === "roundTop") {
+    // lying flat, "top" is the far edge — the image's top, as on a card
+    const shape = roundTopShape(w, d, (component.cornerRadius || 0) * scale);
+    const geo = buildExtrudedPieceGeometry(shape, { widthUnits: 1, depthUnits: 1, thicknessUnits: thickness, uvFrame: { minX: -w / 2, maxX: w / 2, minY: 0, maxY: d } });
+    geo.translate(0, 0, d / 2); // centre it like every other piece
+    return geo;
+  }
   if (component.kind === "alpha") {
     // die-cut (トムソン): the image's own silhouette, in the whole image's unit frame
     // (see alphaOutline.js) — so W×D is the picture's size and the cut sits inside it
@@ -256,4 +265,35 @@ export function buildComponentGeometry(component, scale) {
   }
   const shape = buildPresetShape(component.kind);
   return buildExtrudedPieceGeometry(shape, { widthUnits: w, depthUnits: d, thicknessUnits: thickness });
+}
+
+// a standee: W = width, D = height, thickness = the board (see standee.js)
+function buildStandee(c, scale, w, h, t) {
+  const common = { t, w, h, stand: c.stand || "slot", standSize: (c.standSize || 0) * scale };
+  const r = (c.cornerRadius || 0) * scale;
+  if (c.kind === "roundTop") {
+    return buildStandeeGeometry({ ...common, shapes: roundTopShape(w, h, r), frame: { minX: -w / 2, maxX: w / 2, minY: 0, maxY: h } });
+  }
+  if (c.kind === "roundedSquare") {
+    return buildStandeeGeometry({ ...common, shapes: roundedRectShape(w, h, r), frame: { minX: -w / 2, maxX: w / 2, minY: -h / 2, maxY: h / 2 }, post: { sx: 1, sy: 1, dy: h / 2 } });
+  }
+  // unit-frame outlines (-0.5..0.5): a die-cut, an SVG, or a preset shape
+  let shapes = null;
+  if (c.kind === "alpha") {
+    const outline = traceAlphaOutline(c.img, c.transform);
+    if (outline) {
+      const v = ([x, y]) => new THREE.Vector2(x, y);
+      shapes = outline.shapes.map(({ outer, holes }) => {
+        const sh = new THREE.Shape(outer.map(v));
+        sh.holes = holes.map((hl) => new THREE.Path(hl.map(v)));
+        return sh;
+      });
+    }
+  } else if (c.kind === "svg" && c.svgText) {
+    shapes = parseSvgToUnitShapes(c.svgText)?.shapes || null;
+  } else if (["circle", "hexagon", "triangle"].includes(c.kind)) {
+    shapes = buildPresetShape(c.kind);
+  }
+  if (!shapes) shapes = roundedRectShape(1, 1, 0);
+  return buildStandeeGeometry({ ...common, shapes, frame: { minX: -0.5, maxX: 0.5, minY: -0.5, maxY: 0.5 }, post: { sx: w, sy: h, dy: h / 2 } });
 }

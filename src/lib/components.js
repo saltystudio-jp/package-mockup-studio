@@ -8,6 +8,7 @@ export const DEFAULT_COMPONENT_COLOR = "#c9b896";
 
 export const COMPONENT_SHAPE_KINDS = [
   { key: "roundedSquare", label: "角丸四角" },
+  { key: "roundTop", label: "上だけ角丸" },
   { key: "circle", label: "円" },
   { key: "hexagon", label: "六角形" },
   { key: "triangle", label: "三角形" },

@@ -536,6 +536,7 @@ export default function PackageBoxMockup() {
         c.kind === "svg" ? c.svgText : "",
         c.kind === "alpha" ? `${imageKey(c.img)}:${JSON.stringify(c.transform)}` : "",
         c.kind === "die" ? c.dieStyle : "",
+        c.standee ? `standee:${c.stand}:${c.standSize}` : "",
       ].join("|");
     const syncComponentInstances = (items) => {
       const idSet = new Set(items.map((p) => p.id));
@@ -554,7 +555,8 @@ export default function PackageBoxMockup() {
         const shapeKey = componentShapeKey(c);
         const rec = componentInstancesTHREE[c.id];
         if (!rec) {
-          const mats = Array.from({ length: 3 }, () => makeFaceMaterial());
+          // 0 back / bottom, 1 front / top, 2 edges, 3 a standee's plastic base
+          const mats = Array.from({ length: 4 }, () => makeFaceMaterial());
           const mesh = new THREE.Mesh(buildComponentGeometry(c, SCALE), mats);
           mesh.castShadow = true;
           mesh.receiveShadow = true;
@@ -1272,7 +1274,17 @@ export default function PackageBoxMockup() {
     componentInstances.forEach((inst) => {
       const rec = t.componentInstancesTHREE[inst.id];
       if (!rec) return;
-      const appearanceKey = [imageKey(inst.img), JSON.stringify(inst.transform), inst.color, inst.w, inst.d, inst.kind, inst.pipColor, JSON.stringify(colorCorrection)].join("|");
+      const appearanceKey = [
+        imageKey(inst.img),
+        JSON.stringify(inst.transform),
+        inst.color,
+        inst.w,
+        inst.d,
+        inst.kind,
+        inst.pipColor,
+        JSON.stringify(colorCorrection),
+        inst.standee ? `${imageKey(inst.backImg)}:${inst.standColor}` : "",
+      ].join("|");
       if (rec.appearanceKey === appearanceKey) return;
       rec.appearanceKey = appearanceKey;
 
@@ -1304,13 +1316,37 @@ export default function PackageBoxMockup() {
       tex.offset.set(offset[0], offset[1]);
       tex.needsUpdate = true;
 
+      // a standee is printed on both sides: its own back art, or the front's again
+      let backTex = null;
+      if (inst.standee) {
+        if (inst.backImg) {
+          const bc = applyColorCorrection(buildComponentFaceCanvas({ ...inst, img: inst.backImg, transform: null }), colorCorrection);
+          backTex = new THREE.CanvasTexture(bc);
+          backTex.encoding = THREE.sRGBEncoding;
+          backTex.anisotropy = t.maxAnisotropy || 1;
+          const fit = inst.kind === "alpha" ? { repeat: [1, 1], offset: [0, 0] } : coverFitRepeatOffset(bc.width / bc.height, faceAspect);
+          backTex.repeat.set(fit.repeat[0], fit.repeat[1]);
+          backTex.offset.set(fit.offset[0], fit.offset[1]);
+          backTex.needsUpdate = true;
+        } else backTex = tex;
+      }
       const bodyColor = srgb(inst.color || COMPONENT_DEFAULTS.color);
+      const disposed = new Set();
+      rec.mats.forEach((m) => {
+        if (m.map && !disposed.has(m.map)) {
+          disposed.add(m.map);
+          m.map.dispose();
+        }
+      });
       rec.mats.forEach((m, i) => {
-        if (m.map) m.map.dispose();
-        if (i === 1) {
-          // top cap (0=bottom, 1=top, 2=side — see splitCapGroups in shapes2d.js)
-          m.map = tex;
+        if (i === 1 || (i === 0 && backTex)) {
+          // top cap (0=bottom, 1=top, 2=side — see splitCapGroups in shapes2d.js);
+          // a standee's back (0) is printed too
+          m.map = i === 1 ? tex : backTex;
           m.color.set(0xffffff);
+        } else if (i === 3) {
+          m.map = null;
+          setSrgb(m.color, inst.standColor || "#2b2b2b");
         } else {
           m.map = null;
           m.color.copy(bodyColor);
@@ -2065,7 +2101,8 @@ export default function PackageBoxMockup() {
     if (item.objKind === kind) {
       // a die has no standing/lying control, so it never inherits (or passes on) a
       // card's standing pose — it would be stuck on its side with no way back
-      const keepPose = fields.kind !== "die" && sel.kind !== "die";
+      // nor does a standee swap poses with a flat piece: each takes its own template's
+      const keepPose = fields.kind !== "die" && sel.kind !== "die" && !!fields.standee === !!sel.standee;
       const next = { ...fields, ...placement, orientation: keepPose ? sel.orientation : fields.orientation, id: sel.id };
       if (kind === "box") setBoxInstances((prev) => prev.map((b) => (b.id === sel.id ? next : b)));
       else setComponentInstances((prev) => prev.map((c) => (c.id === sel.id ? next : c)));
@@ -2184,6 +2221,19 @@ export default function PackageBoxMockup() {
       const id = placeFromLibrary(preset);
       setBoxNet(id, slot.key, { img, fileName, transform: DEFAULT_CROP, faceLayout });
       setLayoutEditor({ boxId: id, slotKey: slot.key });
+      return;
+    }
+    if (choice.kind === "standee") {
+      const preset = PRESET_ITEMS.find((it) => it.id === "preset:standee-slot25");
+      const aspect = imgW(img) / imgH(img);
+      const r1 = (v) => Math.round(v * 10) / 10;
+      // W × height: the art's real size, else 50mm tall at its proportions
+      const [w, d] = sizeMm ? sizeMm.map(r1) : aspect >= 1 ? [50, r1(50 / aspect)] : [r1(50 * aspect), 50];
+      placeFromLibrary({
+        objKind: "component",
+        name: "スタンド駒",
+        template: { ...preset.template, w, d, img, fileName, transform: EMPTY_CROP, ...(choice.dieCut ? { kind: "alpha" } : {}) },
+      });
       return;
     }
     const isCard = choice.kind === "card";
@@ -3106,6 +3156,8 @@ export default function PackageBoxMockup() {
           onAutoDetectShape={autoDetectComponentShape}
           onSetSvgShape={setComponentSvgShape}
           onDieCut={dieCutComponent}
+          onUploadBackImage={(e) => readImageFile(e, (img) => patchSelectedComponent({ backImg: img }))}
+          onPasteBackImage={makePasteHandler((img) => patchSelectedComponent({ backImg: img }))}
         />
         )}
         </>
@@ -3463,6 +3515,19 @@ export default function PackageBoxMockup() {
               title="カメラの自動回転"
             >
               ↻ 自動回転
+            </button>
+            {/* depth of field on/off, always at hand; its settings are in 環境 → 被写界深度 */}
+            <button
+              onClick={() => setDofEnabled((v) => !v)}
+              aria-pressed={dofEnabled}
+              className="rounded px-2 py-0.5"
+              style={{
+                background: dofEnabled ? "var(--accent)" : "var(--border)",
+                color: dofEnabled ? "#1c1a17" : "var(--text-primary)",
+              }}
+              title="被写界深度のオン/オフ(ピントやボケの強さは 環境 → 被写界深度 で設定)"
+            >
+              被写界深度
             </button>
           </div>
         </div>

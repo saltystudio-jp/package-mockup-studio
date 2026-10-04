@@ -58,6 +58,7 @@ export const LIBRARY_GROUPS = [
   { key: "box", label: "箱" },
   { key: "card", label: "カード" },
   { key: "token", label: "トークン・駒" },
+  { key: "standee", label: "スタンド駒" },
   { key: "dice", label: "ダイス" },
   { key: "user", label: "登録済み" },
 ];
@@ -86,6 +87,17 @@ const tokenPreset = (key, name, kind, w, d, thickness, color, cornerRadius = 0) 
   group: "token",
   objKind: "component",
   template: { ...COMPONENT_DEFAULTS, kind, w, d, thickness, cornerRadius, color },
+});
+
+// a standee (スタンディー): a thick board piece standing up on a foot — W = width,
+// D = height, thickness = the board (see standee.js); printed on both sides
+const STANDEE_EDGE = "#d9d2c3"; // the board's cut edge
+const standeePreset = (key, name, w, h, stand, cornerRadius = 4) => ({
+  id: `preset:standee-${key}`,
+  name,
+  group: "standee",
+  objKind: "component",
+  template: { ...COMPONENT_DEFAULTS, kind: "roundTop", standee: true, stand, standSize: 0, standColor: "#2b2b2b", backImg: null, orientation: "standing", w, d: h, thickness: 2, cornerRadius, color: STANDEE_EDGE },
 });
 
 // a die is a cube: w = d = thickness = its side
@@ -127,6 +139,10 @@ export const PRESET_ITEMS = [
   diePreset("wood16", "木製ダイス 16", 16, "rounded", WOOD_COLOR, "#3b2414", 1.2),
   diePreset("woodround16", "木製ダイス 丸面 16", 16, "ballcut", WOOD_COLOR, "#3b2414"),
   diePreset("woodround20", "木製ダイス 丸面 20", 20, "ballcut", WOOD_COLOR, "#3b2414"),
+
+  standeePreset("slot25", "スタンディー 25×50", 25, 50, "slot"),
+  standeePreset("slot30", "スタンディー 30×60", 30, 60, "slot"),
+  standeePreset("base25", "スタンディー 台座", 25, 50, "base"),
 ];
 
 export function sizeLabel(item) {
