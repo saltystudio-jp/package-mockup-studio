@@ -1,6 +1,7 @@
 import React, { useEffect, useRef, useState } from "react";
 import * as THREE from "three";
 import { ChainIcon } from "./DimensionFields.jsx";
+import ScrubField from "./ScrubField.jsx";
 
 // The selected object's transform box, drawn over the 3D view (it replaces the blue
 // selection ring). Its geometry comes from `t.gizmo`, measured by the placement effect
@@ -20,59 +21,45 @@ const ROT_STEP = 15;
 
 const r1 = (v) => Math.round(v * 10) / 10;
 
-function GizmoInput({ value, unit, onCommit, title, prefix, width = 58 }) {
-  const [editing, setEditing] = useState(null);
-  const shown = editing ?? String(r1(value));
-  const commit = () => {
-    if (editing == null) return;
-    const v = parseFloat(editing);
-    setEditing(null);
-    if (Number.isFinite(v)) onCommit(v);
-  };
+// The same field as the inspector's (drag left/right to scrub, click to type, Shift ×5,
+// Alt ×0.2), on a dark chip so it reads over the 3D view. Presses stop here, so
+// working a field never selects, moves or orbits anything behind it.
+function GizmoScrub({ prefix, title, ...field }) {
   return (
-    <label
-      className="flex items-center rounded"
+    <div
       title={title}
       onPointerDown={(e) => e.stopPropagation()}
-      style={{
-        background: "rgba(28,26,23,0.9)",
-        border: "1px solid var(--border-well)",
-        padding: "1px 5px",
-        gap: "2px",
-        fontFamily: "'JetBrains Mono', monospace",
-        fontSize: "11px",
-        color: "var(--text-primary)",
-        pointerEvents: "auto",
-        whiteSpace: "nowrap",
-      }}
+      className="rounded"
+      style={{ background: "rgba(28,26,23,0.92)", padding: "1px 3px", pointerEvents: "auto", whiteSpace: "nowrap" }}
     >
-      {prefix && <span style={{ color: "var(--highlight)", marginRight: "2px" }}>{prefix}</span>}
-      <input
-        value={shown}
-        onChange={(e) => setEditing(e.target.value)}
-        onFocus={(e) => {
-          setEditing(String(r1(value)));
-          e.target.select();
-        }}
-        onBlur={commit}
-        onKeyDown={(e) => {
-          if (e.key === "Enter") {
-            commit();
-            e.currentTarget.blur();
-          } else if (e.key === "Escape") {
-            setEditing(null);
-            e.currentTarget.blur();
-          }
-        }}
-        aria-label={title}
-        style={{ width, background: "transparent", border: "none", outline: "none", color: "inherit", font: "inherit", textAlign: "right" }}
-      />
-      <span style={{ color: "var(--text-muted)" }}>{unit}</span>
-    </label>
+      <ScrubField compact label={prefix ? <span style={{ fontSize: "11px", color: "var(--highlight)" }}>{prefix}</span> : null} {...field} />
+    </div>
   );
 }
 
-export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, onToggleLink, onPatch }) {
+// the inspector's limits for each size field, so the box can't push past them either
+function limitsFor(kind, o, field) {
+  if (kind === "box") return field === "lidH" ? [1, 200] : [1, 500];
+  if (o.kind === "die") return [2, 60];
+  return field === "thickness" ? [0.1, 300] : [1, 500];
+}
+// narrows a scale factor so every field it touches stays inside its limits
+function clampScale(k, entries) {
+  let lo = 0;
+  let hi = Infinity;
+  entries.forEach(([value, [min, max]]) => {
+    if (!(value > 0)) return;
+    lo = Math.max(lo, min / value);
+    hi = Math.min(hi, max / value);
+  });
+  return Math.min(hi, Math.max(lo, k));
+}
+
+// With several objects selected (t.gizmo.group) the box is world-aligned around all of
+// them and acts on the whole set: scaling is uniform (every object's sizes and its
+// distance from the anchor scale together), rotating turns every object and its
+// position around the set's centre. Changes come back as onPatchMany([{ kind, id, patch }]).
+export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH, zoom, link, onToggleLink, onPatch, onPatchMany }) {
   const [view, setView] = useState(null);
   const dragRef = useRef(null);
   const viewKeyRef = useRef("");
@@ -200,6 +187,18 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
   // ---- writing a scale back: new fields + the origin moved so the anchor holds ----
   // s: per-axis factors; hx/hz: which side is dragged (0 = scale about the centre)
   const scalePatch = (g0, o0, { sx, sy, sz, hx = 0, hz = 0 }) => {
+    // keep every field inside the inspector's limits; a linked scale stays one factor
+    if (g0.uniformOnly) {
+      sx = sy = sz = clampScale(sx, [[o0.w, limitsFor(g0.kind, o0, "w")]]);
+    } else if (sx === sy && sy === sz) {
+      const k = clampScale(sx, ["x", "y", "z"].map((ax) => [o0[g0.fieldFor[ax]], limitsFor(g0.kind, o0, g0.fieldFor[ax])]));
+      sx = sy = sz = k;
+    } else {
+      const one = (k, ax) => (k === 1 ? 1 : clampScale(k, [[o0[g0.fieldFor[ax]], limitsFor(g0.kind, o0, g0.fieldFor[ax])]]));
+      sx = one(sx, "x");
+      sy = one(sy, "y");
+      sz = one(sz, "z");
+    }
     const ex0 = g0.x1 - g0.x0;
     const ez0 = g0.z1 - g0.z0;
     const span = (lo, hi, len, sgn) => (sgn > 0 ? [lo, lo + len] : sgn < 0 ? [hi - len, hi] : [(lo + hi) / 2 - len / 2, (lo + hi) / 2 + len / 2]);
@@ -225,6 +224,38 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
     return patch;
   };
 
+  // ---- the whole selection at once ----
+  const groupScale = (g0, ms0, k0, hx = 0, hz = 0) => {
+    const k = clampScale(
+      k0,
+      ms0.flatMap(({ kind, obj: o }) => (kind === "box" ? ["w", "d", "h", "lidH"] : ["w", "d", "thickness"]).map((fl) => [o[fl], limitsFor(kind, o, fl)]))
+    );
+    const ax = hx > 0 ? g0.x0 : hx < 0 ? g0.x1 : (g0.x0 + g0.x1) / 2;
+    const az = hz > 0 ? g0.z0 : hz < 0 ? g0.z1 : (g0.z0 + g0.z1) / 2;
+    return ms0.map(({ kind, id, obj: o }) => {
+      const px = o.x * SCALE;
+      const pz = o.z * SCALE;
+      const patch = { x: r1((ax + (px - ax) * k) / SCALE), z: r1((az + (pz - az) * k) / SCALE) };
+      (kind === "box" ? ["w", "d", "h", "lidH"] : ["w", "d", "thickness"]).forEach((fl) => {
+        if (o[fl] > 0) patch[fl] = Math.max(fl === "thickness" ? 0.1 : 1, r1(o[fl] * k));
+      });
+      if (o.floatHeight) patch.floatHeight = r1(o.floatHeight * k);
+      return { kind, id, patch };
+    });
+  };
+  const groupRotate = (ms0, c, deltaDeg) => {
+    const th = (deltaDeg * Math.PI) / 180;
+    const cs = Math.cos(th);
+    const sn = Math.sin(th);
+    return ms0.map(({ kind, id, obj: o }) => {
+      const rx = o.x * SCALE - c.x;
+      const rz = o.z * SCALE - c.z;
+      const rot = ((((o.rotY || 0) + deltaDeg) % 360) + 360) % 360;
+      return { kind, id, patch: { x: r1((c.x + rx * cs + rz * sn) / SCALE), z: r1((c.z - rx * sn + rz * cs) / SCALE), rotY: rot } };
+    });
+  };
+  const snapshot = () => members.map((m) => ({ kind: m.kind, id: m.id, obj: { ...m.obj } }));
+
   // ---- dragging ----
   const groundAt = (e, y) => {
     const rect = t.renderer.domElement.getBoundingClientRect();
@@ -241,7 +272,7 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
     } catch {
       // no live pointer to capture (synthetic events) — the drag still works without it
     }
-    dragRef.current = { mode, g0: { ...g, P: [...g.P] }, o0: { ...obj }, ...extra };
+    dragRef.current = { mode, g0: { ...g, P: [...g.P] }, o0: { ...obj }, ms0: snapshot(), ...extra };
     if (mode === "rotate") {
       const c = toWorld(g, (g.x0 + g.x1) / 2, (g.z0 + g.z1) / 2);
       const p = groundAt(e, g.y0);
@@ -282,7 +313,8 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
         s = Math.max(0.05, s);
         sx = sy = sz = s;
       }
-      onPatch(scalePatch(g0, o0, { sx, sy, sz, hx, hz }));
+      if (g0.group) onPatchMany(groupScale(g0, d.ms0, sx, hx, hz));
+      else onPatch(scalePatch(g0, o0, { sx, sy, sz, hx, hz }));
     } else if (d.mode === "height") {
       // along the vertical edge as it appears on screen
       const k = artW / d.rect.width; // client px → artboard px (the artboard is zoomed)
@@ -291,11 +323,18 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
       const ux = d.tp[0] - d.b[0];
       const uy = d.tp[1] - d.b[1];
       const s = Math.max(0.05, ((cx - d.b[0]) * ux + (cy - d.b[1]) * uy) / (ux * ux + uy * uy || 1));
-      onPatch(scalePatch(g0, o0, linked ? { sx: s, sy: s, sz: s } : { sx: 1, sy: s, sz: 1 }));
+      if (g0.group) onPatchMany(groupScale(g0, d.ms0, s));
+      else onPatch(scalePatch(g0, o0, linked ? { sx: s, sy: s, sz: s } : { sx: 1, sy: s, sz: 1 }));
     } else if (d.mode === "rotate") {
       const p = groundAt(e, g0.y0);
       if (!p || d.phi0 == null) return;
       const phi = Math.atan2(p.x - d.c.x, p.z - d.c.z);
+      if (g0.group) {
+        let delta = ((phi - d.phi0) * 180) / Math.PI;
+        delta = e.shiftKey ? Math.round(delta / ROT_STEP) * ROT_STEP : Math.round(delta);
+        onPatchMany(groupRotate(d.ms0, d.c, delta));
+        return;
+      }
       let deg = (o0.rotY || 0) + ((phi - d.phi0) * 180) / Math.PI;
       deg = e.shiftKey ? Math.round(deg / ROT_STEP) * ROT_STEP : Math.round(deg);
       onPatch({ rotY: ((deg % 360) + 360) % 360 });
@@ -313,6 +352,11 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
 
   // ---- typed values ----
   const typeSize = (axis, v) => {
+    if (g.group) {
+      const ext = valueOf(axis);
+      if (v > 0 && ext > 0) onPatchMany(groupScale(g, snapshot(), v / ext));
+      return;
+    }
     const field = f[axis];
     const old = g.uniformOnly ? obj.w : obj[field];
     if (!(v > 0) || !(old > 0)) return;
@@ -323,28 +367,43 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
     else s["s" + axis] = k;
     onPatch(scalePatch(g, obj, s));
   };
-  const valueOf = (axis) => (g.uniformOnly ? obj.w : obj[f[axis]]) ?? 0;
+  // a set's size is its overall extent; one object's is its own field
+  function valueOf(axis) {
+    if (g.group) return ((axis === "x" ? g.x1 - g.x0 : axis === "z" ? g.z1 - g.z0 : g.y1 - g.y0) / SCALE);
+    return (g.uniformOnly ? obj.w : obj[f[axis]]) ?? 0;
+  }
+  const groupLabel = { x: ["W", "幅(全体)"], z: ["D", "奥行(全体)"], y: ["H", "高さ(全体)"] };
   const label = { w: "幅", d: "奥行", h: "高さ", thickness: "厚み" };
   const short = { w: "W", d: "D", h: "H", thickness: "T" };
 
   // one size field per axis (a die has just one); each on its edge, or in the toolbar
   const EDGE_MIN = 96; // screen px an edge needs to carry its own field
   const z = zoom || 1;
-  const fields = (g.uniformOnly ? ["x"] : ["x", "z", "y"]).map((axis) => {
+  const fields = (g.group || !g.uniformOnly ? ["x", "z", "y"] : ["x"]).map((axis) => {
     const len = axis === "x" ? view.lenX : axis === "z" ? view.lenZ : view.lenH;
     return {
       axis,
       onEdge: len * z >= EDGE_MIN,
       at: axis === "x" ? view.labelX : axis === "z" ? view.labelZ : view.labelH,
-      input: (
-        <GizmoInput
-          value={valueOf(axis)}
-          unit="mm"
-          prefix={g.uniformOnly ? "" : short[f[axis]]}
-          title={g.uniformOnly ? "サイズ" : label[f[axis]]}
-          onCommit={(v) => typeSize(axis, v)}
-        />
-      ),
+      input: (() => {
+        // the same min/max/step as the inspector field it stands for
+        const [min, max] = g.group ? [1, 3000] : limitsFor(g.kind, obj, g.uniformOnly ? "w" : f[axis]);
+        const fine = !g.group && f[axis] === "thickness";
+        return (
+          <GizmoScrub
+            value={valueOf(axis)}
+            onChange={(v) => typeSize(axis, v)}
+            min={min}
+            max={max}
+            step={fine ? 0.1 : g.group || g.kind === "box" ? 0.1 : 0.5}
+            decimals={1}
+            unit="mm"
+            dragRange={g.group ? 900 : 300}
+            prefix={g.group ? groupLabel[axis][0] : g.uniformOnly ? "" : short[f[axis]]}
+            title={g.group ? groupLabel[axis][1] : g.uniformOnly ? "サイズ" : label[f[axis]]}
+          />
+        );
+      })(),
     };
   });
 
@@ -409,7 +468,15 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
         {fields.filter((fd) => !fd.onEdge).map((fd) => (
           <React.Fragment key={fd.axis}>{fd.input}</React.Fragment>
         ))}
-        <GizmoInput value={obj.rotY || 0} unit="°" width={36} title="角度" onCommit={(v) => onPatch({ rotY: ((Math.round(v) % 360) + 360) % 360 })} />
+        {g.group ? (
+          // a set has no angle of its own (rotate it with the round handle) and always scales uniformly
+          <span className="rounded" style={{ background: "rgba(28,26,23,0.9)", border: "1px solid var(--border-well)", padding: "2px 6px", fontSize: "11px", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
+            {g.count}個を選択中
+          </span>
+        ) : (
+          <GizmoScrub value={obj.rotY || 0} onChange={(v) => onPatch({ rotY: ((v % 360) + 360) % 360 })} min={0} max={359} unit="°" title="角度" />
+        )}
+        {!g.group && (
         <button
           type="button"
           onClick={onToggleLink}
@@ -430,6 +497,7 @@ export default function TransformGizmo({ t, SCALE, obj, artW, artH, zoom, link, 
         >
           <ChainIcon on={link} />
         </button>
+        )}
       </div>
     </div>
   );

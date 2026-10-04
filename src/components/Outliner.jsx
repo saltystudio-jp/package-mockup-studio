@@ -14,7 +14,8 @@ function OutlinerRow({ row, index, selected, onSelect, onRemove, canRemove, drag
     <div
       draggable
       data-row-index={index}
-      onClick={() => onSelect(row.kind, row.id)}
+      // Shift/Ctrl-click adds to or removes from the selection
+      onClick={(e) => onSelect(row.kind, row.id, { toggle: e.shiftKey || e.ctrlKey || e.metaKey })}
       onMouseEnter={() => setHover(true)}
       onMouseLeave={() => setHover(false)}
       {...dragHandlers}
@@ -96,6 +97,7 @@ export default function Outliner({
   componentInstances,
   libraryItems,
   activeSelection,
+  selectedKeys = [],
   onSelect,
   onPlace,
   onOpenLibrary,
@@ -256,7 +258,7 @@ export default function Outliner({
         }}
       >
         {rows.map((row, index) => {
-          const selected = activeSelection?.kind === row.kind && activeSelection?.id === row.id;
+          const selected = selectedKeys.includes(`${row.kind}:${row.id}`) || (activeSelection?.kind === row.kind && activeSelection?.id === row.id);
           return (
             <OutlinerRow
               key={`${row.kind}:${row.id}`}
@@ -281,7 +283,7 @@ export default function Outliner({
         })}
       </div>
       <p className="text-xs mt-2 flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-        上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。
+        上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。Shift/Ctrlクリックで複数選択。
       </p>
     </div>
   );

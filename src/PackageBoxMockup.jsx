@@ -260,7 +260,47 @@ export default function PackageBoxMockup() {
   // one selection across both lists; null when nothing is selected (the scene is
   // allowed to be empty — a box is just another object now, not a required fixture)
   const [activeSelection, setActiveSelection] = useState({ kind: "box", id: 1 });
-  const selectObject = (kind, id) => setActiveSelection(kind == null ? null : { kind, id });
+  // Multi-selection: `selectedKeys` ("box:1", "component:3", …) holds every selected
+  // object; activeSelection is the one the inspector shows (the last one picked). Code
+  // that sets activeSelection on its own (placing, duplicating, undo…) simply gets a
+  // single selection again — the set only counts while it contains the active object.
+  const [selectedKeys, setSelectedKeys] = useState(["box:1"]);
+  const keyOf = (kind, id) => `${kind}:${id}`;
+  const parseKey = (k) => {
+    const [kind, id] = k.split(":");
+    return { kind, id: Number(id) };
+  };
+  const activeKey = activeSelection ? keyOf(activeSelection.kind, activeSelection.id) : null;
+  const objectExists = (k) => {
+    const { kind, id } = parseKey(k);
+    return (kind === "box" ? boxInstances : componentInstances).some((o) => o.id === id);
+  };
+  const selectionKeys = activeKey ? (selectedKeys.includes(activeKey) ? selectedKeys.filter(objectExists) : [activeKey]) : [];
+  const selectionKeysRef = useRef(selectionKeys);
+  selectionKeysRef.current = selectionKeys;
+  // toggle: Shift/Ctrl-click — add the object to the selection, or take it out again
+  const selectObject = (kind, id, { toggle = false } = {}) => {
+    if (kind == null) {
+      setActiveSelection(null);
+      setSelectedKeys([]);
+      return;
+    }
+    const key = keyOf(kind, id);
+    if (!toggle) {
+      setActiveSelection({ kind, id });
+      setSelectedKeys([key]);
+      return;
+    }
+    const cur = selectionKeysRef.current;
+    if (cur.includes(key)) {
+      const next = cur.filter((k) => k !== key);
+      setSelectedKeys(next);
+      setActiveSelection(next.length ? parseKey(next[next.length - 1]) : null);
+    } else {
+      setSelectedKeys([...cur, key]);
+      setActiveSelection({ kind, id });
+    }
+  };
   const selectedBox = activeSelection?.kind === "box" ? boxInstances.find((b) => b.id === activeSelection.id) || null : null;
   const selectedComponent =
     activeSelection?.kind === "component" ? componentInstances.find((c) => c.id === activeSelection.id) || null : null;
@@ -651,6 +691,30 @@ export default function PackageBoxMockup() {
         e.preventDefault();
       } else if (e.button === 0 || e.button === 2) {
         const hit = pickInstanceAt(e.clientX, e.clientY);
+        if (hit && e.button === 0 && (e.shiftKey || e.ctrlKey || e.metaKey)) {
+          // Shift/Ctrl-click adds to (or removes from) the selection — no drag
+          selectObject(hit.kind, hit.id, { toggle: true });
+          return;
+        }
+        const keys = selectionKeysRef.current;
+        if (hit && e.button === 0 && !e.altKey && keys.length > 1 && keys.includes(`${hit.kind}:${hit.id}`)) {
+          // pressing on an object that's part of a multi-selection drags the whole set;
+          // a click without dragging narrows the selection to it (see onPointerUp)
+          const startGround = groundPointAt(e.clientX, e.clientY);
+          if (startGround) {
+            const members = keys
+              .map((k) => {
+                const [kind, id] = k.split(":");
+                const o = instancesRefByKind[kind].current.find((x) => x.id === Number(id));
+                return o ? { kind, id: o.id, startX: o.x, startZ: o.z } : null;
+              })
+              .filter(Boolean);
+            t.objectDrag = { mode: "moveMany", members, click: hit, startGroundX: startGround.x, startGroundZ: startGround.z, moved: false };
+          }
+          t.lastX = e.clientX;
+          t.lastY = e.clientY;
+          return;
+        }
         if (hit) {
           // select immediately on mousedown (standard editor behavior: mousedown
           // selects, a subsequent drag moves/rotates the now-selected object) — this
@@ -740,6 +804,25 @@ export default function PackageBoxMockup() {
         return;
       }
 
+      if (t.objectDrag?.mode === "moveMany") {
+        const ground = groundPointAt(e.clientX, e.clientY);
+        if (!ground) return;
+        const d = t.objectDrag;
+        const worldDX = ground.x - d.startGroundX;
+        const worldDZ = ground.z - d.startGroundZ;
+        if (!d.moved && Math.hypot(worldDX, worldDZ) * (1 / SCALE) > 1) d.moved = true;
+        if (!d.moved) return;
+        ["box", "component"].forEach((kind) =>
+          setInstancesByKind[kind]((prev) =>
+            prev.map((o) => {
+              const m = d.members.find((x) => x.kind === kind && x.id === o.id);
+              return m ? { ...o, x: m.startX + worldDX / SCALE, z: m.startZ + worldDZ / SCALE } : o;
+            })
+          )
+        );
+        return;
+      }
+
       if (t.objectDrag?.mode === "move") {
         const ground = groundPointAt(e.clientX, e.clientY);
         if (!ground) return;
@@ -762,6 +845,7 @@ export default function PackageBoxMockup() {
       // clicked on nothing (no drag): drop the selection, hiding its transform box
       if (t.emptyPress && Math.hypot(e.clientX - t.emptyPress.x, e.clientY - t.emptyPress.y) < 4) selectObject(null);
       t.emptyPress = null;
+      if (t.objectDrag?.mode === "moveMany" && !t.objectDrag.moved) selectObject(t.objectDrag.click.kind, t.objectDrag.click.id);
       t.canvasPointerActive = false;
       t.dragging = false;
       t.panning = false;
@@ -1007,7 +1091,21 @@ export default function PackageBoxMockup() {
         : activeSelection?.kind === "component"
           ? t.componentInstancesTHREE[activeSelection.id]?.group
           : null;
-    if (selData && selGroup) {
+    if (selectionKeys.length > 1) {
+      // several objects: one world-aligned box around all of them
+      const bb = new THREE.Box3();
+      let count = 0;
+      selectionKeys.forEach((k) => {
+        const { kind, id } = parseKey(k);
+        const grp = kind === "box" ? t.instances[id]?.boxGroup : t.componentInstancesTHREE[id]?.group;
+        if (!grp) return;
+        bb.union(new THREE.Box3().setFromObject(grp));
+        count++;
+      });
+      if (count > 1 && !bb.isEmpty()) {
+        t.gizmo = { group: true, count, yaw: 0, P: [0, 0], x0: bb.min.x, x1: bb.max.x, z0: bb.min.z, z1: bb.max.z, y0: bb.min.y, y1: bb.max.y, fieldFor: {}, uniformOnly: true };
+      }
+    } else if (selData && selGroup) {
       const yaw = ((selData.rotY || 0) * Math.PI) / 180;
       const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
       const q = selGroup.quaternion.clone();
@@ -1050,7 +1148,7 @@ export default function PackageBoxMockup() {
       };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [boxInstances, activeSelection, componentInstances]);
+  }, [boxInstances, activeSelection, componentInstances, selectedKeys]);
 
   // ---- each component instance's OWN materials: top face = its image, cover-fit via
   // UV repeat/offset so it never distorts; bottom + sides = its tint color. Re-baked
@@ -1785,6 +1883,21 @@ export default function PackageBoxMockup() {
     return newId;
   };
 
+  const removeSelection = () => {
+    const keys = new Set(selectionKeysRef.current);
+    if (!keys.size) return;
+    const nextBoxes = boxInstances.filter((b) => !keys.has(keyOf("box", b.id)));
+    const nextComponents = componentInstances.filter((c) => !keys.has(keyOf("component", c.id)));
+    commitObjects(nextBoxes, nextComponents);
+    const top = stackOrder(nextBoxes, nextComponents).pop();
+    selectObject(top?.kind ?? null, top?.id);
+  };
+  const selectAll = () => {
+    const keys = [...boxInstances.map((b) => keyOf("box", b.id)), ...componentInstances.map((c) => keyOf("component", c.id))];
+    if (!keys.length) return;
+    setSelectedKeys(keys);
+    if (!activeSelection) setActiveSelection(parseKey(keys[keys.length - 1]));
+  };
   const removeInstance = (kind, id) => {
     const nextBoxes = kind === "box" ? boxInstances.filter((b) => b.id !== id) : boxInstances;
     const nextComponents = kind === "component" ? componentInstances.filter((c) => c.id !== id) : componentInstances;
@@ -1984,7 +2097,9 @@ export default function PackageBoxMockup() {
   activeSelectionRef.current = activeSelection;
   const clipboardRef = useRef(null);
   const removeFnsRef = useRef(null);
-  removeFnsRef.current = removeInstance;
+  removeFnsRef.current = removeSelection;
+  const selectAllRef = useRef(null);
+  selectAllRef.current = selectAll;
   const moveLayerRef = useRef(null);
   moveLayerRef.current = moveSelectedLayer;
   // while a modal is up, the scene behind it must not react to keys — Delete in the
@@ -2147,7 +2262,10 @@ export default function PackageBoxMockup() {
         }
         const key = e.key.toLowerCase();
         // Ctrl+C / Ctrl+V are handled by the copy/paste listeners above
-        if (key === "z") {
+        if (key === "a") {
+          e.preventDefault();
+          selectAllRef.current?.();
+        } else if (key === "z") {
           e.preventDefault();
           if (e.shiftKey) redoRef.current?.();
           else undoRef.current?.();
@@ -2158,11 +2276,12 @@ export default function PackageBoxMockup() {
         return;
       }
       if (e.key === "Delete" || e.key === "Backspace") {
-        const sel = activeSelectionRef.current;
-        if (sel) {
+        if (activeSelectionRef.current) {
           e.preventDefault();
-          removeFnsRef.current?.(sel.kind, sel.id);
+          removeFnsRef.current?.(); // everything selected
         }
+      } else if (e.key === "Escape") {
+        selectObject(null);
       }
     };
     window.addEventListener("keydown", onKeyDown);
@@ -2352,6 +2471,7 @@ export default function PackageBoxMockup() {
           componentInstances={componentInstances}
           libraryItems={libraryItems}
           activeSelection={activeSelection}
+          selectedKeys={selectionKeys}
           onSelect={selectObject}
           onPlace={(item) => placeFromLibrary(item)}
           onOpenLibrary={() => setActiveTab("component")}
@@ -2398,6 +2518,12 @@ export default function PackageBoxMockup() {
 
         {activeTab === "object" && (
         <>
+        {selectionKeys.length > 1 && (
+          <p className="mb-3 rounded px-2.5 py-2" style={{ fontSize: "11px", lineHeight: 1.5, color: "var(--text-secondary)", background: "var(--bg-surface-1)", border: "1px solid var(--border)" }}>
+            <span style={{ color: "var(--text-primary)", fontWeight: 600 }}>{selectionKeys.length}個を選択中。</span>
+            3Dビューの枠でまとめて移動・拡大縮小・回転、Deleteでまとめて削除できます。下は最後に選んだオブジェクトの設定です。
+          </p>
+        )}
         {!selectedObject && (
           <div className="flex flex-col items-start gap-2 py-6">
             <div style={{ fontSize: "13px", fontWeight: 600, color: "var(--text-primary)" }}>オブジェクトが選択されていません</div>
@@ -2815,6 +2941,19 @@ export default function PackageBoxMockup() {
                 t={three.current}
                 SCALE={SCALE}
                 obj={selectedObject}
+                members={selectionKeys
+                  .map(parseKey)
+                  .map(({ kind, id }) => ({ kind, id, obj: (kind === "box" ? boxInstances : componentInstances).find((o) => o.id === id) }))
+                  .filter((m) => m.obj)}
+                onPatchMany={(list) => {
+                  const apply = (kind) => (prev) =>
+                    prev.map((o) => {
+                      const hit = list.find((l) => l.kind === kind && l.id === o.id);
+                      return hit ? { ...o, ...hit.patch } : o;
+                    });
+                  setBoxInstances(apply("box"));
+                  setComponentInstances(apply("component"));
+                }}
                 artW={artboardW}
                 artH={artboardH}
                 zoom={artboardZoom}
