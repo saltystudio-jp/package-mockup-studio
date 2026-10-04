@@ -13,6 +13,7 @@ import SegmentedControl from "./components/SegmentedControl.jsx";
 import DimensionFields from "./components/DimensionFields.jsx";
 import ModalBackdrop from "./components/ModalBackdrop.jsx";
 import PasteImageDialog from "./components/PasteImageDialog.jsx";
+import TransformGizmo from "./components/TransformGizmo.jsx";
 import useClickOutside from "./hooks/useClickOutside.js";
 import { sectionTitle, sectionMeta, helpText, buttonStyle } from "./lib/ui.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, THEME_STORAGE_KEY } from "./lib/theme.js";
@@ -187,6 +188,8 @@ export default function PackageBoxMockup() {
   const [confirmDialog, setConfirmDialog] = useState(null);
   // an image pasted onto the app itself, waiting for "what is it?" — { img, sizeMm }
   const [pastedImage, setPastedImage] = useState(null);
+  // the transform box's size link (W/D/H change together) — on by default
+  const [gizmoLink, setGizmoLink] = useState(true);
   const [lightAzimuth, setLightAzimuth] = useState(49);
   const [lightElevation, setLightElevation] = useState(46);
   const [groundVisible, setGroundVisible] = useState(true);
@@ -846,6 +849,7 @@ export default function PackageBoxMockup() {
       });
 
       renderer.render(scene, camera);
+      t.onFrame?.(); // the transform box's overlay follows the camera
     };
     animate();
     t.raf = raf;
@@ -979,29 +983,65 @@ export default function PackageBoxMockup() {
     // not — see t.resetCameraView.
     t.updateShadowFit?.();
 
-    // ring under whichever object is the active selection — only shown once there's
-    // more than one object, since with just one it's obvious what the controls apply
-    // to. Drawn at the object's own base, not always on the floor: a card resting on a
-    // box used to get its ring on the ground underneath the box, hidden by it.
-    if (t.selectionMarker) {
-      const totalObjects = boxInstances.length + componentInstances.length;
-      const selGroup =
-        activeSelection?.kind === "box"
-          ? t.instances[activeSelection.id]?.boxGroup
-          : activeSelection?.kind === "component"
-            ? t.componentInstancesTHREE[activeSelection.id]?.group
-            : null;
-      if (selGroup && totalObjects > 1) {
-        const selBox = new THREE.Box3().setFromObject(selGroup);
-        const selSize = new THREE.Vector3();
-        selBox.getSize(selSize);
-        const radius = Math.max(selSize.x, selSize.z) * 0.5 * Math.SQRT2 + 0.08;
-        t.selectionMarker.scale.set(radius, radius, 1);
-        t.selectionMarker.position.set((selBox.min.x + selBox.max.x) / 2, Math.max(0, selBox.min.y) + 0.002, (selBox.min.z + selBox.max.z) / 2);
-        t.selectionMarker.visible = true;
-      } else {
-        t.selectionMarker.visible = false;
-      }
+    // The selected object's transform box (TransformGizmo draws and drives it): its
+    // bounds measured in its OWN yaw frame — so the box turns with the object instead of
+    // being world-axis-aligned — plus which size field each of the three axes is. The
+    // blue ring it replaces is kept hidden.
+    if (t.selectionMarker) t.selectionMarker.visible = false;
+    t.gizmo = null;
+    const selData =
+      activeSelection?.kind === "box"
+        ? boxInstances.find((b) => b.id === activeSelection.id)
+        : activeSelection?.kind === "component"
+          ? componentInstances.find((c) => c.id === activeSelection.id)
+          : null;
+    const selGroup =
+      activeSelection?.kind === "box"
+        ? t.instances[activeSelection.id]?.boxGroup
+        : activeSelection?.kind === "component"
+          ? t.componentInstancesTHREE[activeSelection.id]?.group
+          : null;
+    if (selData && selGroup) {
+      const yaw = ((selData.rotY || 0) * Math.PI) / 180;
+      const qYaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), yaw);
+      const q = selGroup.quaternion.clone();
+      const qNoYaw = qYaw.clone().invert().multiply(q);
+      selGroup.quaternion.copy(qNoYaw);
+      selGroup.updateMatrixWorld(true);
+      const bb = new THREE.Box3().setFromObject(selGroup);
+      selGroup.quaternion.copy(q);
+      selGroup.updateMatrixWorld(true);
+      // model axes: x = W, y = H (box) / thickness (piece), z = D. After the pose (no
+      // yaw), each lands on some world axis — that's the field that axis edits.
+      const isBox = activeSelection.kind === "box";
+      const local = [
+        ["w", new THREE.Vector3(1, 0, 0)],
+        [isBox ? "h" : "thickness", new THREE.Vector3(0, 1, 0)],
+        ["d", new THREE.Vector3(0, 0, 1)],
+      ];
+      const fieldFor = {};
+      local.forEach(([field, v]) => {
+        v.applyQuaternion(qNoYaw);
+        const ax = [Math.abs(v.x), Math.abs(v.y), Math.abs(v.z)];
+        fieldFor["xyz"[ax.indexOf(Math.max(...ax))]] = field;
+      });
+      const px = selGroup.position.x;
+      const pz = selGroup.position.z;
+      t.gizmo = {
+        kind: activeSelection.kind,
+        id: activeSelection.id,
+        yaw,
+        P: [px, pz],
+        // bounds relative to the object's origin, in its yaw frame (world units)
+        x0: bb.min.x - px,
+        x1: bb.max.x - px,
+        z0: bb.min.z - pz,
+        z1: bb.max.z - pz,
+        y0: bb.min.y,
+        y1: bb.max.y,
+        fieldFor,
+        uniformOnly: selData.kind === "die", // a die is a cube: one size
+      };
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [boxInstances, activeSelection, componentInstances]);
@@ -2762,6 +2802,21 @@ export default function PackageBoxMockup() {
             }}
           >
             <div ref={mountRef} style={{ width: "100%", height: "100%" }} />
+            {selectedObject && activeSelection && (
+              <TransformGizmo
+                t={three.current}
+                SCALE={SCALE}
+                obj={selectedObject}
+                artW={artboardW}
+                artH={artboardH}
+                zoom={artboardZoom}
+                link={gizmoLink}
+                onToggleLink={() => setGizmoLink((v) => !v)}
+                onPatch={(patch) =>
+                  activeSelection.kind === "box" ? updateBox(activeSelection.id, patch) : updateComponentInstance(activeSelection.id, patch)
+                }
+              />
+            )}
           </div>
 
           <div ref={helpRef} className="absolute top-3 left-3 flex flex-col items-start gap-1.5">

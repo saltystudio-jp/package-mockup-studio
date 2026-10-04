@@ -3,7 +3,7 @@ import ScrubField from "./ScrubField.jsx";
 import { changeDims } from "../lib/dims.js";
 
 // A link (chain) icon; drawn rather than an emoji so it takes the button's color
-function ChainIcon({ on }) {
+export function ChainIcon({ on }) {
   return (
     <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" aria-hidden="true">
       <path d="M6.5 9.5l3-3" opacity={on ? 1 : 0.35} />
