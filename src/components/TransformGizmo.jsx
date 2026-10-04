@@ -11,6 +11,9 @@ import ScrubField from "./ScrubField.jsx";
 //   - edge handles on the base     scale W or D (with the link: everything)
 //   - the handle on top            scales the height
 //   - the round handle             rotates (Shift: 15° steps)
+//   - the diamond above the top    leans the object (tiltX/tiltZ, ±45°, Shift: 5° steps):
+//                                  drag it the way the top should go
+//   - the toolbar's second row     angle, both tilts, and 立てる/寝かせる
 //   - a number field on each axis  types W / D / H directly
 //   - the small toolbar            angle, and the size link (on by default)
 //
@@ -18,6 +21,9 @@ import ScrubField from "./ScrubField.jsx";
 // as ordinary object fields (w/d/h or thickness, x/z, rotY) through onPatch.
 const HANDLE = 5; // half size, screen px
 const ROT_STEP = 15;
+const LEAN_STEP = 5;
+const LEAN_MAX = 45; // the inspector's limit
+const LEAN_STEM = 30; // screen px from the top of the box up to the lean handle
 
 const r1 = (v) => Math.round(v * 10) / 10;
 
@@ -159,6 +165,7 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
         lenH: Math.hypot(top[hi][0] - base[hi][0], top[hi][1] - base[hi][1]),
         rot,
         farMid: far.mid,
+        topCenter: project(toWorld(g, cx, cz, g.y1)),
         // under the box, centred on it — or above it when there's no room below
         toolbar: (() => {
           const all = [...base, ...top, rot];
@@ -279,6 +286,10 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
       if (p) dragRef.current.phi0 = Math.atan2(p.x - c.x, p.z - c.z);
       dragRef.current.c = c;
     }
+    if (mode === "lean") {
+      const p = groundAt(e, g.y1);
+      if (p) dragRef.current.l0 = toYaw(g, p.x, p.z);
+    }
     if (mode === "height") {
       dragRef.current.b = view.base[view.hIndex];
       dragRef.current.tp = view.top[view.hIndex];
@@ -325,6 +336,21 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
       const s = Math.max(0.05, ((cx - d.b[0]) * ux + (cy - d.b[1]) * uy) / (ux * ux + uy * uy || 1));
       if (g0.group) onPatchMany(groupScale(g0, d.ms0, s));
       else onPatch(scalePatch(g0, o0, linked ? { sx: s, sy: s, sz: s } : { sx: 1, sy: s, sz: 1 }));
+    } else if (d.mode === "lean") {
+      // the pointer, on the plane through the top of the box, in the object's own
+      // frame: leaning by tiltX moves the top along +z, by tiltZ along -x
+      const p = groundAt(e, g0.y1);
+      if (!p || !d.l0) return;
+      const [lx, lz] = toYaw(g0, p.x, p.z);
+      const h = Math.max(0.01, g0.y1 - g0.y0);
+      const deg = (r) => (r * 180) / Math.PI;
+      const step = (v) => {
+        const r = e.shiftKey ? Math.round(v / LEAN_STEP) * LEAN_STEP : Math.round(v);
+        return Math.max(-LEAN_MAX, Math.min(LEAN_MAX, r));
+      };
+      const tiltX = step((o0.tiltX || 0) + deg(Math.atan2(lz, h) - Math.atan2(d.l0[1], h)));
+      const tiltZ = step((o0.tiltZ || 0) - deg(Math.atan2(lx, h) - Math.atan2(d.l0[0], h)));
+      onPatch({ tiltX, tiltZ });
     } else if (d.mode === "rotate") {
       const p = groundAt(e, g0.y0);
       if (!p || d.phi0 == null) return;
@@ -443,6 +469,22 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
           <circle cx={view.rot[0]} cy={view.rot[1]} r={HANDLE * 2.4 * inv} fill="transparent" />
           <circle cx={view.rot[0]} cy={view.rot[1]} r={HANDLE * 1.3 * inv} fill="var(--highlight)" stroke="#ffffff" strokeWidth={1.5 * inv} />
         </g>
+        {!g.group &&
+          (() => {
+            const [tx, ty] = view.topCenter;
+            const hy = ty - LEAN_STEM * inv;
+            const r = HANDLE * 1.25 * inv;
+            return (
+              <g key="lean">
+                <line x1={tx} y1={ty} x2={tx} y2={hy} stroke="#ffb454" strokeWidth={1 * inv} strokeDasharray={`${3 * inv} ${2 * inv}`} />
+                <g style={{ cursor: "move", pointerEvents: "auto" }} {...dragProps("lean")}>
+                  <title>ドラッグで傾ける(Shiftで5°刻み)</title>
+                  <circle cx={tx} cy={hy} r={HANDLE * 2.4 * inv} fill="transparent" />
+                  <path d={`M${tx} ${hy - r} L${tx + r} ${hy} L${tx} ${hy + r} L${tx - r} ${hy} Z`} fill="#ffb454" stroke="#1c1a17" strokeWidth={1 * inv} />
+                </g>
+              </g>
+            );
+          })()}
         {view.base.map((p, i) => handleRect(p, `c${i}`, "scale", { h: view.cornerH[i] }, "nwse-resize"))}
         {view.edges.map((e, i) => handleRect(e.mid, `e${i}`, "scale", { h: e.h }, e.axis === "x" ? "ns-resize" : "ew-resize"))}
         {/* a thin piece's top sits on its base corner — no separate height handle then (the field still works) */}
@@ -463,18 +505,17 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
           pointerEvents: "auto",
         }}
         onPointerDown={(e) => e.stopPropagation()}
-        className="flex items-center gap-1"
+        className="flex flex-col items-center gap-1"
       >
+        <div className="flex items-center gap-1">
         {fields.filter((fd) => !fd.onEdge).map((fd) => (
           <React.Fragment key={fd.axis}>{fd.input}</React.Fragment>
         ))}
-        {g.group ? (
+        {g.group && (
           // a set has no angle of its own (rotate it with the round handle) and always scales uniformly
           <span className="rounded" style={{ background: "rgba(28,26,23,0.9)", border: "1px solid var(--border-well)", padding: "2px 6px", fontSize: "11px", color: "var(--text-secondary)", whiteSpace: "nowrap" }}>
             {g.count}個を選択中
           </span>
-        ) : (
-          <GizmoScrub value={obj.rotY || 0} onChange={(v) => onPatch({ rotY: ((v % 360) + 360) % 360 })} min={0} max={359} unit="°" title="角度" />
         )}
         {!g.group && (
         <button
@@ -497,6 +538,26 @@ export default function TransformGizmo({ t, SCALE, obj, members = [], artW, artH
         >
           <ChainIcon on={link} />
         </button>
+        )}
+        </div>
+        {!g.group && (
+          // the pose: turn, lean front/back and left/right, stand up or lay down
+          <div className="flex items-center gap-1">
+            <GizmoScrub prefix="角度" value={obj.rotY || 0} onChange={(v) => onPatch({ rotY: ((v % 360) + 360) % 360 })} min={0} max={359} unit="°" title="角度(回転 Y)" />
+            <GizmoScrub prefix="前後" value={obj.tiltX || 0} onChange={(v) => onPatch({ tiltX: v })} min={-LEAN_MAX} max={LEAN_MAX} unit="°" title="傾き(前後)" />
+            <GizmoScrub prefix="左右" value={obj.tiltZ || 0} onChange={(v) => onPatch({ tiltZ: v })} min={-LEAN_MAX} max={LEAN_MAX} unit="°" title="傾き(左右)" />
+            {obj.kind !== "die" && (
+              <button
+                type="button"
+                onClick={() => onPatch({ orientation: obj.orientation === "standing" ? "lying" : "standing" })}
+                title={obj.orientation === "standing" ? "寝かせる(平置きにする)" : "立てる(縦置きにする)"}
+                className="rounded"
+                style={{ background: "rgba(28,26,23,0.9)", border: "1px solid var(--border-well)", color: "var(--text-primary)", fontSize: "11px", padding: "3px 8px", whiteSpace: "nowrap", cursor: "pointer" }}
+              >
+                {obj.orientation === "standing" ? "寝かせる" : "立てる"}
+              </button>
+            )}
+          </div>
         )}
       </div>
     </div>
