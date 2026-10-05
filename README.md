@@ -18,7 +18,7 @@ React + three.js + Vite 製で、Windows・Mac どちらでも同じように動
 ## セットアップと起動
 
 ```bash
-git clone <このリポジトリのURL>
+git clone https://github.com/saltystudio-jp/package-mockup-studio.git
 cd package-mockup-studio
 npm install
 npm run dev
