@@ -5,7 +5,7 @@ import ModalBackdrop from "./ModalBackdrop.jsx";
 import ScrubField from "./ScrubField.jsx";
 import SegmentedControl from "./SegmentedControl.jsx";
 import DimensionFields from "./DimensionFields.jsx";
-import { sectionTitle, sectionMeta, buttonStyle } from "../lib/ui.js";
+import { sectionTitle, sectionMeta, buttonStyle, modKeys } from "../lib/ui.js";
 import { DEFAULT_GUIDE_COLOR } from "../lib/nets.js";
 import { connectedFaces } from "../lib/netLayout.js";
 import { changeDims } from "../lib/dims.js";
@@ -708,7 +708,7 @@ export default function NetLayoutEditor({
             )}
           </div>
           <p className="text-xs mb-3" style={{ color: "var(--text-muted)" }}>
-            面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択、選択の外をクリックで解除。選択した面はドラッグで移動、複数選択中は四隅と上下左右の白いハンドルで拡大縮小できます。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。
+            {modKeys("面のクリックで選択(Shiftで追加)、何もない所のドラッグで範囲選択、Ctrl+Aで全選択、選択の外をクリックで解除。選択した面はドラッグで移動、複数選択中は四隅と上下左右の白いハンドルで拡大縮小できます。端や角にスナップします(Altで一時解除)。ホイールで表示倍率、右ドラッグで表示を移動。")}
           </p>
 
           <div className="mb-2" style={sectionTitle}>

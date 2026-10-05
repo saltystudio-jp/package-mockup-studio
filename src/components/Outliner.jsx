@@ -1,7 +1,7 @@
 import React, { useRef, useState } from "react";
 import useClickOutside from "../hooks/useClickOutside.js";
 import LibraryMenu from "./LibraryMenu.jsx";
-import { sectionTitle, buttonStyle } from "../lib/ui.js";
+import { sectionTitle, buttonStyle, modKeys } from "../lib/ui.js";
 
 const TYPE_DOT_STYLE = {
   box: { background: "#cbb98f", borderRadius: "2px" },
@@ -283,7 +283,7 @@ export default function Outliner({
         })}
       </div>
       <p className="text-xs mt-2 flex-shrink-0" style={{ color: "var(--text-muted)" }}>
-        上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。Shift/Ctrlクリック、または3DビューでShift+ドラッグで複数選択。
+        {modKeys("上にあるものほど上に積まれます。ドラッグ、または Ctrl+] / Ctrl+[(Shiftで最前面・最背面)で並び替え。Shift/Ctrlクリック、または3DビューでShift+ドラッグで複数選択。")}
       </p>
     </div>
   );

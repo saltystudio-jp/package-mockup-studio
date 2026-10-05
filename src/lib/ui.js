@@ -76,3 +76,8 @@ export function buttonStyle(role = "quiet", { active = false } = {}) {
     color: active ? "var(--text-primary)" : "var(--text-secondary)",
   };
 }
+
+// Shortcut labels: the app accepts Ctrl or ⌘ for every shortcut; this only changes what
+// it SAYS, so a Mac user reads ⌘ where Windows shows Ctrl.
+export const IS_MAC = typeof navigator !== "undefined" && /Mac|iPhone|iPad/.test(navigator.platform || navigator.userAgent || "");
+export const modKeys = (label) => (IS_MAC ? label.replace(/Ctrl\+/g, "⌘").replace(/Ctrl/g, "⌘").replace(/\bAlt\b/g, "⌥") : label);

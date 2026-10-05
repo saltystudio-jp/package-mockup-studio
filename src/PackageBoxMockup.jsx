@@ -17,7 +17,7 @@ import ModalBackdrop from "./components/ModalBackdrop.jsx";
 import PasteImageDialog from "./components/PasteImageDialog.jsx";
 import TransformGizmo from "./components/TransformGizmo.jsx";
 import useClickOutside from "./hooks/useClickOutside.js";
-import { sectionTitle, sectionMeta, helpText, buttonStyle } from "./lib/ui.js";
+import { sectionTitle, sectionMeta, helpText, buttonStyle, modKeys } from "./lib/ui.js";
 import { THEMES, THEME_ORDER, DEFAULT_THEME, THEME_STORAGE_KEY } from "./lib/theme.js";
 import { buildComponentGeometry, parseSvgToUnitShapes } from "./lib/shapes2d.js";
 import {
@@ -2851,9 +2851,9 @@ export default function PackageBoxMockup() {
             >
               {[
                 ["新規作成", "", newProject],
-                ["開く…", "Ctrl+O", openProject],
-                ["保存", "Ctrl+S", () => saveProject(false)],
-                ["名前を付けて保存…", "Ctrl+Shift+S", () => saveProject(true)],
+                ["開く…", modKeys("Ctrl+O"), openProject],
+                ["保存", modKeys("Ctrl+S"), () => saveProject(false)],
+                ["名前を付けて保存…", modKeys("Ctrl+Shift+S"), () => saveProject(true)],
               ].map(([label, keys, fn]) => (
                 <button
                   key={label}
@@ -3490,15 +3490,15 @@ export default function PackageBoxMockup() {
                       ["右クリックドラッグ", "選択中のオブジェクトを回転"],
                       ["ドラッグ(何もない所)", "視点を回転"],
                       ["Shift+ドラッグ(何もない所)", "範囲選択(選択に追加)"],
-                      ["Shift/Ctrl+クリック", "選択に追加 / 解除"],
+                      [modKeys("Shift/Ctrl+クリック"), "選択に追加 / 解除"],
                       ["ホイール", "ズーム"],
                       ["中クリックドラッグ", "パン"],
                       ["Space+ドラッグ", "プレビュー枠を移動"],
-                      ["Ctrl+ホイール", "プレビューの倍率"],
-                      ["Ctrl+] / Ctrl+[", "レイヤーを上へ / 下へ(Shiftで最前面・最背面)"],
-                      ["Ctrl+C / Ctrl+V", "オブジェクトをコピー / 貼り付け(画像を貼ると箱・カード・駒として配置)"],
+                      [modKeys("Ctrl+ホイール"), "プレビューの倍率"],
+                      [modKeys("Ctrl+] / Ctrl+["), "レイヤーを上へ / 下へ(Shiftで最前面・最背面)"],
+                      [modKeys("Ctrl+C / Ctrl+V"), "オブジェクトをコピー / 貼り付け(画像を貼ると箱・カード・駒として配置)"],
                       ["Delete", "選択中のオブジェクトを削除"],
-                      ["Ctrl+Z / Ctrl+Y", "元に戻す / やり直す"],
+                      [modKeys("Ctrl+Z / Ctrl+Y"), "元に戻す / やり直す"],
                     ].map(([k, v]) => (
                       <React.Fragment key={k}>
                         <span style={{ color: "var(--text-primary)", whiteSpace: "nowrap" }}>{k}</span>
